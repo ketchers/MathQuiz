@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BookOpen, Edit3, Eye, Plus, Trash2, Save, RefreshCw, CheckCircle, XCircle, Users, Loader2, EyeOff, Lock, AlertTriangle } from 'lucide-react';
+import { BookOpen, Edit3, Plus, Trash2, Save, CheckCircle, XCircle, Users, Loader2, Lock, LogOut, LayoutList, Shuffle, AlertTriangle, ArrowLeft, RefreshCw, Settings } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
 
 // ==================================================================================
-// 🔧 TEACHER CONFIGURATION AREA
-// Paste your keys inside the quotes below.
+// 🔧 CONFIGURATION
 // ==================================================================================
 
 const GEMINI_API_KEY = "AIzaSyAP9aBXGhgxgZvN7AoBXvab2KiQ1AwzSK0"; // Example: "AIzaSy..."
@@ -21,15 +20,14 @@ const FIREBASE_CONFIG = {
   measurementId: "G-E4FZS9M3PD"
 };
 
-const TEACHER_PASSWORD = "112358"; // Change this to a secret password for yourself
+const TEACHER_EMAIL = "richard.ketchersid@gmail.com"; // ENTER YOUR EXACT GOOGLE EMAIL HERE
 
 // ==================================================================================
-// 🚀 APP CODE (Do not edit below unless you know React)
+// 🚀 APP LOGIC
 // ==================================================================================
 
-// --- Initialize Services (Only if config is present) ---
 let app, auth, db;
-const isConfigured = FIREBASE_CONFIG.apiKey && GEMINI_API_KEY;
+const isConfigured = FIREBASE_CONFIG.apiKey && GEMINI_API_KEY && TEACHER_EMAIL;
 
 if (isConfigured) {
   app = initializeApp(FIREBASE_CONFIG);
@@ -37,352 +35,492 @@ if (isConfigured) {
   db = getFirestore(app);
 }
 
-// --- AI Grading Service ---
+// --- Helpers ---
+const shuffleArray = (array) => {
+  const newArr = [...array];
+  for (let i = newArr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+  }
+  return newArr;
+};
+
 const gradeWithAI = async (quiz, answers) => {
   if (!GEMINI_API_KEY) return null;
   try {
     const prompt = `
-      You are a strict but helpful math teacher. Grade the following student answers.
-      
-      Quiz Title: ${quiz.title}
-      
-      Questions and Student Answers:
-      ${quiz.questions.map(q => `
-        Question ID: ${q.id}
-        Question: ${q.text}
-        Student Answer: ${answers[q.id] || "(No answer provided)"}
-      `).join('\n')}
+      You are a helpful math teacher. Grade these student answers.
+      Quiz Context: ${quiz.title}
 
-      For each question, determine if the math is correct.
-      The student is using LaTeX.
-      
-      Return ONLY a valid JSON object with this structure:
+      Questions & Student Answers:
+      ${quiz.questions.map(q => `
+        [QUESTION ID]: ${q.id}
+        [PROMPT]: ${q.text}
+        [STUDENT ANSWER]: ${answers[q.id] || "No answer provided"}
+      `).join('\n----------------\n')}
+
+      INSTRUCTIONS:
+      1. Check if the math is correct. LaTeX formatting is expected.
+      2. Provide a short, helpful feedback sentence (max 15 words).
+      3. Return a JSON object where keys are the [QUESTION ID].
+
+      REQUIRED JSON STRUCTURE:
       {
         "evaluations": {
-          "question_id_here": {
-            "isCorrect": boolean,
-            "feedback": "Short, helpful 1-sentence feedback."
-          }
+          "1715...": { "isCorrect": true, "feedback": "Good job." },
+          "1716...": { "isCorrect": false, "feedback": "Check your signs." }
         }
       }
     `;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      }
-    );
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
+    });
 
     const data = await response.json();
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    
     if (text) {
         text = text.replace(/```json\n?|\n?```/g, '');
         return JSON.parse(text);
     }
     return null;
-  } catch (error) {
-    console.error("AI Grading Error:", error);
-    return null;
+  } catch (e) { 
+    console.error("Grading Error", e); 
+    return null; 
   }
 };
 
-// --- KaTeX Loader ---
+// --- Components ---
+
 const useKaTeX = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
     if (window.katex) { setIsLoaded(true); return; }
-    const link = document.createElement('link');
-    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
-    link.rel = "stylesheet";
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
-    script.onload = () => setIsLoaded(true);
-    document.body.appendChild(script);
+    const link = document.createElement('link'); link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; link.rel = "stylesheet"; document.head.appendChild(link);
+    const script = document.createElement('script'); script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; script.onload = () => setIsLoaded(true); document.body.appendChild(script);
   }, []);
   return isLoaded;
 };
 
-// --- Math Renderer ---
-const MathRenderer = ({ text, className = "" }) => {
-  const containerRef = useRef(null);
-  const isKaTeXLoaded = useKaTeX();
-
+const MathRenderer = ({ text }) => {
+  const ref = useRef(null);
+  const loaded = useKaTeX();
   useEffect(() => {
-    if (!isKaTeXLoaded || !containerRef.current || typeof text !== 'string') return;
-    const renderMath = () => {
-        const container = containerRef.current;
-        container.innerHTML = '';
-        const parts = text.split(/(\$\$[\s\S]*?\$\$)/g);
-        parts.forEach(part => {
-            if (part.startsWith('$$') && part.endsWith('$$')) {
-                const math = part.slice(2, -2);
-                const span = document.createElement('div');
-                span.className = "my-2 text-center overflow-x-auto";
-                try { window.katex.render(math, span, { displayMode: true, throwOnError: false }); } 
-                catch (e) { span.textContent = part; }
-                container.appendChild(span);
-            } else {
-                const inlineParts = part.split(/(\$[\s\S]*?\$)/g);
-                inlineParts.forEach(subPart => {
-                    if (subPart.startsWith('$') && subPart.endsWith('$')) {
-                        const math = subPart.slice(1, -1);
-                        const span = document.createElement('span');
-                        try { window.katex.render(math, span, { displayMode: false, throwOnError: false }); } 
-                        catch (e) { span.textContent = subPart; }
-                        container.appendChild(span);
-                    } else {
-                        const span = document.createElement('span');
-                        span.textContent = subPart;
-                        container.appendChild(span);
-                    }
-                });
-            }
+    if (!loaded || !ref.current || !text) return;
+    ref.current.innerHTML = '';
+    const safeText = String(text);
+    safeText.split(/(\$\$[\s\S]*?\$\$)/g).forEach(part => {
+      if (part.startsWith('$$')) {
+        const div = document.createElement('div'); div.className = "my-2 text-center overflow-x-auto";
+        try { window.katex.render(part.slice(2, -2), div, { displayMode: true }); } catch { div.textContent = part; }
+        ref.current.appendChild(div);
+      } else {
+        part.split(/(\$[\s\S]*?\$)/g).forEach(sub => {
+           const span = document.createElement('span');
+           if (sub.startsWith('$')) try { window.katex.render(sub.slice(1, -1), span); } catch { span.textContent = sub; }
+           else span.textContent = sub;
+           ref.current.appendChild(span);
         });
-    };
-    renderMath();
-  }, [text, isKaTeXLoaded]);
-
-  if (!isKaTeXLoaded) return <span className="text-slate-400 text-xs">...</span>;
-  if (typeof text !== 'string') return null; 
-  return <div ref={containerRef} className={`whitespace-pre-wrap ${className}`} />;
+      }
+    });
+  }, [text, loaded]);
+  return <div ref={ref} className="whitespace-pre-wrap" />;
 };
 
-// --- Main Application ---
 export default function App() {
-  // Configuration Check
-  if (!isConfigured) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-        <div className="bg-white p-8 rounded-xl shadow-lg max-w-lg w-full text-center space-y-4">
-            <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto" />
-            <h1 className="text-xl font-bold text-slate-800">Setup Required</h1>
-            <p className="text-slate-600">You need to configure your keys to use this app.</p>
-            <div className="text-left bg-slate-50 p-4 rounded border border-slate-200 text-sm font-mono overflow-x-auto">
-                1. Open <strong>MathQuizApp.jsx</strong><br/>
-                2. Find <strong>FIREBASE_CONFIG</strong> and paste your Firebase keys.<br/>
-                3. Find <strong>GEMINI_API_KEY</strong> and paste your AI key.
-            </div>
-        </div>
+  if (!isConfigured) return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+          <div className="bg-white p-8 rounded shadow text-center max-w-lg">
+              <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4"/>
+              <h1 className="font-bold text-xl mb-2">Configuration Missing</h1>
+              <p className="text-slate-600 mb-4">Please open <code>MathQuizApp.jsx</code> and enter your keys.</p>
+          </div>
       </div>
-    );
-  }
+  );
 
   const [user, setUser] = useState(null);
-  const [mode, setMode] = useState('landing'); 
-  const [passwordInput, setPasswordInput] = useState('');
-  
-  const [quiz, setQuiz] = useState({
-    id: 'active-quiz',
-    title: "New Quiz",
-    questions: [{ id: 1, text: "Solve for x: $2x = 10$", showFeedback: true }]
-  });
-  const [studentName, setStudentName] = useState('');
-  const [answers, setAnswers] = useState({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [aiResult, setAiResult] = useState(null);
+  const [view, setView] = useState('loading'); 
+  const [quizzes, setQuizzes] = useState([]);
+  const [activeQuiz, setActiveQuiz] = useState(null);
   const [submissions, setSubmissions] = useState([]);
-  const [submissionStatus, setSubmissionStatus] = useState('');
+  
+  // Student State
+  const [studentAnswers, setStudentAnswers] = useState({});
+  const [studentQuestions, setStudentQuestions] = useState([]); 
+  const [alreadyTaken, setAlreadyTaken] = useState(false);
+  const [attemptsCount, setAttemptsCount] = useState(0);
+  const [aiResult, setAiResult] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Initialize Auth
-  useEffect(() => {
-    signInAnonymously(auth);
-    return onAuthStateChanged(auth, setUser);
-  }, []);
+  useEffect(() => onAuthStateChanged(auth, (u) => {
+    setUser(u);
+    if (!u) setView('login');
+    else if (u.email === TEACHER_EMAIL) setView('teacher-dashboard');
+    else setView('student-select');
+  }), []);
 
-  // Load Quiz (Real-time)
+  // Fetch Quizzes List
   useEffect(() => {
     if (!user) return;
-    const unsub = onSnapshot(doc(db, 'quizzes', 'active'), (doc) => {
-      if (doc.exists()) setQuiz(doc.data());
+    const unsub = onSnapshot(collection(db, 'quizzes'), (snap) => {
+      setQuizzes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
     return () => unsub();
   }, [user]);
 
-  // Load Submissions (Teacher)
+  // Teacher: Fetch Submissions for active quiz
   useEffect(() => {
-    if (!user || mode !== 'teacher') return;
-    const q = query(collection(db, 'submissions'), orderBy('timestamp', 'desc'), limit(50));
-    const unsub = onSnapshot(q, (snapshot) => {
-      setSubmissions(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    if (view !== 'teacher-edit' || !activeQuiz) return;
+    const q = query(collection(db, 'submissions'), where('quizId', '==', activeQuiz.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setSubmissions(snap.docs.map(d => ({id: d.id, ...d.data()})));
     });
     return () => unsub();
-  }, [user, mode]);
+  }, [view, activeQuiz]);
 
-  // Actions
-  const handleSaveQuiz = async () => {
-    await setDoc(doc(db, 'quizzes', 'active'), quiz);
-    alert("Quiz published!");
+  const handleLogin = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch (e) { alert(e.message); }
   };
 
-  const handleSubmitQuiz = async () => {
-    if (!studentName.trim()) return alert("Name required");
-    setIsSubmitting(true);
-    setSubmissionStatus('AI Grading...');
-    
-    const grading = await gradeWithAI(quiz, answers);
-    setAiResult(grading);
+  const createQuiz = async () => {
+    const newQuiz = {
+      title: "New Quiz",
+      createdAt: Date.now(),
+      randomize: false,
+      maxAttempts: 1, // Default to 1 attempt
+      questions: [{ id: Date.now(), text: "New Question", showFeedback: true }]
+    };
+    const docRef = await addDoc(collection(db, 'quizzes'), newQuiz);
+    setActiveQuiz({ id: docRef.id, ...newQuiz });
+    setView('teacher-edit');
+  };
 
-    setSubmissionStatus('Saving...');
-    try {
-        await addDoc(collection(db, 'submissions'), {
-            quizId: quiz.id,
-            studentName,
-            answers,
-            grading: grading ? grading.evaluations : null,
-            timestamp: Date.now()
-        });
-        setSubmissionStatus('Success');
-    } catch (e) {
-        console.error(e);
-        setSubmissionStatus('Error saving');
+  const deleteQuiz = async (id, e) => {
+    e.stopPropagation();
+    if (!confirm("Delete this quiz?")) return;
+    await deleteDoc(doc(db, 'quizzes', id));
+  };
+
+  const deleteSubmission = async (subId) => {
+      if(!confirm("Reset this student's attempt? They will be able to take the quiz again.")) return;
+      await deleteDoc(doc(db, 'submissions', subId));
+  };
+
+  const saveQuiz = async () => {
+    await setDoc(doc(db, 'quizzes', activeQuiz.id), activeQuiz);
+    alert("Quiz Saved!");
+  };
+
+  const enterQuiz = async (quiz) => {
+    setActiveQuiz(quiz);
+    
+    // Fetch all submissions for this user and quiz
+    const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
+    const snap = await getDocs(q);
+    
+    // Sort in memory to avoid complex Firestore index requirements
+    const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
+    
+    const count = userSubmissions.length;
+    setAttemptsCount(count);
+    const allowed = quiz.maxAttempts || 1;
+
+    if (count >= allowed) {
+        // LOCKOUT MODE: Show latest attempt
+        const latest = userSubmissions[0];
+        setAlreadyTaken(true);
+        setAiResult(latest.grading);
+        setStudentAnswers(latest.answers);
+        setStudentQuestions(quiz.questions); // Standard order for review
+    } else {
+        // ACTIVE MODE
+        setAlreadyTaken(false);
+        setAiResult(null);
+        setStudentAnswers({});
+        setStudentQuestions(quiz.randomize ? shuffleArray(quiz.questions) : quiz.questions);
     }
+    setView('student-quiz');
+  };
+
+  const submitQuiz = async () => {
+    if (alreadyTaken) return;
+    setIsSubmitting(true);
+    
+    const grading = await gradeWithAI(activeQuiz, studentAnswers);
+    
+    await addDoc(collection(db, 'submissions'), {
+        quizId: activeQuiz.id,
+        userId: user.uid,
+        studentName: user.displayName,
+        email: user.email,
+        answers: studentAnswers,
+        grading: grading ? grading.evaluations : null,
+        timestamp: Date.now()
+    });
+
+    setAiResult(grading);
+    setAlreadyTaken(true);
+    setAttemptsCount(c => c + 1); // Increment local count for UI
     setIsSubmitting(false);
   };
 
-  // Helper to toggle feedback
-  const toggleFeedback = (qId) => {
-      setQuiz(prev => ({
-          ...prev,
-          questions: prev.questions.map(q => q.id === qId ? { ...q, showFeedback: !q.showFeedback } : q)
-      }));
-  };
+  if (view === 'loading') return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-indigo-600"/></div>;
 
-  // --- Views ---
-
-  if (mode === 'landing') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center space-y-6 border border-slate-200">
-          <BookOpen className="w-12 h-12 mx-auto text-indigo-600" />
-          <h1 className="text-2xl font-bold text-slate-800">Math Quiz Classroom</h1>
-          <button onClick={() => setMode('student')} className="w-full p-4 rounded-xl border-2 border-indigo-100 bg-indigo-50 hover:bg-indigo-100 hover:border-indigo-200 text-indigo-900 font-bold transition-all">
-            I am a Student
-          </button>
-          <div className="border-t pt-4 mt-4">
-            <p className="text-xs text-slate-400 uppercase mb-2">Teacher Access</p>
-            <div className="flex gap-2">
-              <input type="password" placeholder="Password" className="flex-1 p-2 border rounded text-sm" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} />
-              <button onClick={() => passwordInput === TEACHER_PASSWORD ? setMode('teacher') : alert('Wrong password')} className="px-4 bg-slate-800 text-white rounded text-sm">Login</button>
-            </div>
-          </div>
-        </div>
+  if (view === 'login') return (
+    <div className="h-screen flex items-center justify-center bg-slate-100 p-4">
+      <div className="bg-white p-8 rounded-xl shadow-lg text-center max-w-sm w-full">
+        <BookOpen className="w-12 h-12 mx-auto text-indigo-600 mb-4"/>
+        <h1 className="text-2xl font-bold mb-2">Math Quiz Login</h1>
+        <button onClick={handleLogin} className="w-full bg-white border border-slate-300 text-slate-700 py-3 rounded-lg font-bold hover:bg-slate-50 transition flex items-center justify-center gap-2">
+          Sign in with Google
+        </button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (mode === 'teacher') {
-    return (
-      <div className="min-h-screen bg-slate-50 p-6 pb-24">
-        <div className="max-w-6xl mx-auto grid lg:grid-cols-2 gap-8">
-          <div className="space-y-4">
-            <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm">
-                <h2 className="font-bold flex items-center gap-2"><Edit3 className="w-5 h-5 text-indigo-600"/> Editor</h2>
-                <div className="flex gap-2">
-                    <button onClick={handleSaveQuiz} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm flex gap-1 items-center"><Save className="w-3 h-3"/> Publish</button>
-                    <button onClick={() => setMode('landing')} className="px-3 py-1 border rounded text-sm">Exit</button>
-                </div>
+  if (view === 'teacher-dashboard') return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <div className="max-w-4xl mx-auto">
+        <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+            <h1 className="text-xl font-bold flex gap-2 items-center text-slate-800"><LayoutList className="w-6 h-6 text-indigo-600"/> Teacher Dashboard</h1>
+            <div className="flex gap-4 items-center">
+                <span className="text-sm font-medium text-slate-500 hidden sm:block">{user.email}</span>
+                <button onClick={() => signOut(auth)} className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition text-slate-600"><LogOut className="w-4 h-4"/></button>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm space-y-4">
-                <input className="w-full text-xl font-bold border-b pb-2 outline-none" value={quiz.title} onChange={e => setQuiz({...quiz, title: e.target.value})} />
-                {quiz.questions.map((q, i) => (
-                  <div key={q.id} className="p-4 bg-slate-50 border rounded-lg relative">
-                    <div className="flex justify-between mb-2">
-                        <span className="text-xs font-bold text-slate-400">Q{i+1}</span>
-                        <div className="flex gap-2">
-                            <button onClick={() => toggleFeedback(q.id)} className="text-xs text-slate-500 underline">{q.showFeedback ? 'Hide Feedback' : 'Show Feedback'}</button>
-                            <button onClick={() => setQuiz(p => ({...p, questions: p.questions.filter(x => x.id !== q.id)}))} className="text-red-500"><Trash2 className="w-3 h-3"/></button>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <button onClick={createQuiz} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 font-bold transition group">
+                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-indigo-100 transition"><Plus className="w-6 h-6"/></div>
+                Create New Quiz
+            </button>
+            {quizzes.map(q => (
+                <div key={q.id} onClick={() => { setActiveQuiz(q); setView('teacher-edit'); }} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:border-indigo-500 hover:shadow-md transition group relative h-40 flex flex-col justify-between">
+                    <div>
+                        <h2 className="font-bold text-lg text-slate-800 truncate">{q.title}</h2>
+                        <div className="flex gap-2 mt-2">
+                             <span className="text-xs px-2 py-1 bg-slate-100 rounded-full text-slate-500">{q.questions?.length || 0} Qs</span>
+                             {q.randomize && <span className="text-xs px-2 py-1 bg-indigo-50 text-indigo-600 rounded-full flex gap-1 items-center"><Shuffle className="w-3 h-3"/> Rand</span>}
                         </div>
                     </div>
-                    <textarea className="w-full p-2 border rounded text-sm font-mono" rows={3} value={q.text} onChange={e => {
-                        const n = [...quiz.questions]; n[i].text = e.target.value; setQuiz({...quiz, questions: n});
-                    }} />
-                    <div className="mt-2 p-2 bg-white border rounded"><MathRenderer text={q.text}/></div>
-                  </div>
-                ))}
-                <button onClick={() => setQuiz(p => ({...p, questions: [...p.questions, {id: Date.now(), text: "", showFeedback: true}]}))} className="w-full py-2 border-2 border-dashed rounded text-slate-400 hover:text-indigo-600 hover:border-indigo-400 flex justify-center items-center gap-2"><Plus className="w-4 h-4"/> Add Question</button>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="bg-white p-4 rounded-lg shadow-sm font-bold text-slate-700 flex items-center gap-2"><Users className="w-5 h-5"/> Submissions</div>
-            {submissions.map(sub => (
-                <div key={sub.id} className="bg-white p-4 rounded-lg shadow-sm border border-slate-100">
-                    <div className="flex justify-between font-bold text-slate-700 mb-2">
-                        <span>{sub.studentName}</span>
-                        <span className="text-xs font-normal text-slate-400">{new Date(sub.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                    <div className="space-y-2">
-                        {quiz.questions.map((q, i) => (
-                            <div key={q.id} className="text-sm border-b last:border-0 pb-2">
-                                <div className="flex justify-between text-xs text-slate-500 mb-1">
-                                    <span>Q{i+1}</span>
-                                    {sub.grading?.[q.id] && (
-                                        <span className={sub.grading[q.id].isCorrect ? "text-green-600" : "text-red-600"}>
-                                            {sub.grading[q.id].isCorrect ? "Correct" : "Review"}
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="bg-indigo-50 p-2 rounded"><MathRenderer text={sub.answers[q.id] || "-"} /></div>
-                                {sub.grading?.[q.id]?.feedback && <div className="text-xs italic text-slate-500 mt-1 pl-2 border-l-2">{sub.grading[q.id].feedback}</div>}
-                            </div>
-                        ))}
+                    <div className="flex justify-between items-end mt-4">
+                        <span className="text-xs text-slate-400">Created: {new Date(q.createdAt).toLocaleDateString()}</span>
+                        <button onClick={(e) => deleteQuiz(q.id, e)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><Trash2 className="w-4 h-4"/></button>
                     </div>
                 </div>
             ))}
-          </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // Student View
+  if (view === 'teacher-edit') return (
+    <div className="min-h-screen bg-slate-50 p-6 pb-20">
+       <div className="max-w-6xl mx-auto grid lg:grid-cols-2 gap-8">
+          <div className="space-y-4">
+            <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                <button onClick={() => setView('teacher-dashboard')} className="text-sm font-medium text-slate-500 hover:text-indigo-600 flex items-center gap-1"><ArrowLeft className="w-4 h-4"/> Dashboard</button>
+                <div className="flex gap-2">
+                    <button onClick={saveQuiz} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold flex gap-2 items-center hover:bg-indigo-700 shadow-sm"><Save className="w-4 h-4"/> Save Quiz</button>
+                </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-6">
+                <div>
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Quiz Title</label>
+                    <input className="w-full text-xl font-bold border-b border-slate-200 pb-2 outline-none focus:border-indigo-500 transition" value={activeQuiz.title} onChange={e => setActiveQuiz({...activeQuiz, title: e.target.value})} />
+                </div>
+
+                <div className="flex gap-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <div className="flex-1">
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Max Attempts</label>
+                        <input type="number" min="1" max="10" className="w-full p-2 border rounded text-sm" value={activeQuiz.maxAttempts || 1} onChange={e => setActiveQuiz({...activeQuiz, maxAttempts: parseInt(e.target.value)})} />
+                    </div>
+                    <div className="flex-1">
+                         <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Ordering</label>
+                         <button onClick={() => setActiveQuiz(p => ({...p, randomize: !p.randomize}))} className={`w-full p-2 border rounded text-sm flex gap-2 items-center justify-center ${activeQuiz.randomize ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-white text-slate-500'}`}>
+                             <Shuffle className="w-4 h-4"/> {activeQuiz.randomize ? 'Randomized' : 'Sequential'}
+                         </button>
+                    </div>
+                </div>
+                
+                <div className="space-y-4">
+                    {activeQuiz.questions.map((q, i) => (
+                      <div key={q.id} className="p-4 bg-slate-50 border border-slate-200 rounded-xl relative group hover:border-indigo-200 transition">
+                        <div className="flex justify-between mb-3">
+                            <span className="text-xs font-bold text-slate-400 bg-white px-2 py-1 rounded border border-slate-200">Q{i+1}</span>
+                            <div className="flex gap-3">
+                                 <label className="text-xs flex items-center gap-2 text-slate-600 cursor-pointer select-none">
+                                     <input type="checkbox" className="accent-indigo-600" checked={q.showFeedback} onChange={() => {
+                                     const n = [...activeQuiz.questions]; n[i].showFeedback = !n[i].showFeedback; setActiveQuiz({...activeQuiz, questions: n});
+                                 }} /> Show AI Feedback</label>
+                                <button onClick={() => setActiveQuiz(p => ({...p, questions: p.questions.filter(x => x.id !== q.id)}))} className="text-slate-300 hover:text-red-500 transition"><Trash2 className="w-4 h-4"/></button>
+                            </div>
+                        </div>
+                        <textarea className="w-full p-3 border border-slate-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 outline-none" rows={3} value={q.text} onChange={e => {
+                            const n = [...activeQuiz.questions]; n[i].text = e.target.value; setActiveQuiz({...activeQuiz, questions: n});
+                        }} placeholder="Enter question (LaTeX supported)..." />
+                        <div className="mt-3 p-3 bg-white border border-slate-100 rounded-lg min-h-[40px]"><MathRenderer text={q.text}/></div>
+                      </div>
+                    ))}
+                </div>
+                <button onClick={() => setActiveQuiz(p => ({...p, questions: [...p.questions, {id: Date.now(), text: "", showFeedback: true}]}))} className="w-full py-4 border-2 border-dashed border-slate-300 rounded-xl text-slate-500 hover:text-indigo-600 hover:border-indigo-400 flex justify-center items-center gap-2 font-bold transition"><Plus className="w-5 h-5"/> Add Question</button>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 font-bold text-slate-700 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Submissions ({submissions.length})</div>
+            {submissions.length === 0 && <div className="text-center p-10 bg-white border border-slate-200 rounded-lg text-slate-400 italic">No submissions yet.</div>}
+            
+            <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
+                {submissions.map(sub => (
+                    <div key={sub.id} className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 text-sm relative group">
+                         <button 
+                            onClick={() => deleteSubmission(sub.id)} 
+                            className="absolute top-4 right-4 p-2 bg-white text-slate-300 border rounded hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition"
+                            title="Reset Attempt (Delete Submission)"
+                        >
+                            <RefreshCw className="w-4 h-4"/>
+                        </button>
+
+                        <div className="flex justify-between items-start mb-4 border-b border-slate-50 pb-3 pr-10">
+                            <div>
+                                <div className="font-bold text-slate-800 text-lg">{sub.studentName}</div>
+                                <div className="text-slate-400 text-xs">{sub.email}</div>
+                            </div>
+                            <span className="text-slate-400 font-mono text-xs bg-slate-50 px-2 py-1 rounded">{new Date(sub.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <div className="space-y-4">
+                            {activeQuiz.questions.map((q, i) => {
+                                const grade = sub.grading?.evaluations?.[q.id] || sub.grading?.[q.id];
+                                return (
+                                    <div key={q.id} className="border-l-2 border-slate-100 pl-3">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <span className="text-xs font-bold text-slate-400">Q{i+1}</span>
+                                            {grade && (
+                                              <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${grade.isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                {grade.isCorrect ? 'Correct' : 'Check Work'}
+                                              </span>
+                                            )}
+                                        </div>
+                                        
+                                        <div className="bg-slate-50 p-2 rounded mb-1">
+                                            <MathRenderer text={sub.answers[q.id] || ""} />
+                                        </div>
+
+                                        {grade?.feedback && (
+                                            <div className="text-xs text-slate-500 italic mt-1">
+                                                <span className="font-bold text-indigo-400 not-italic mr-1">AI:</span> 
+                                                {grade.feedback}
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+                ))}
+            </div>
+          </div>
+       </div>
+    </div>
+  );
+
+  if (view === 'student-select') return (
+    <div className="min-h-screen bg-slate-50 p-6 flex flex-col items-center">
+        <div className="w-full max-w-md space-y-6">
+            <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                <h1 className="text-lg font-bold text-slate-800">Available Quizzes</h1>
+                <button onClick={() => signOut(auth)} className="text-xs font-bold text-slate-500 hover:text-red-600">Log Out</button>
+            </div>
+            
+            <div className="space-y-3">
+                {quizzes.map(q => (
+                    <button key={q.id} onClick={() => enterQuiz(q)} className="w-full bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:border-indigo-500 hover:shadow-md text-left transition group">
+                        <div className="flex justify-between items-center">
+                            <h2 className="font-bold text-lg text-slate-800 group-hover:text-indigo-700">{q.title}</h2>
+                            <span className="bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded-full group-hover:bg-indigo-50 group-hover:text-indigo-600 transition">{q.questions.length} Qs</span>
+                        </div>
+                    </button>
+                ))}
+                {quizzes.length === 0 && <div className="text-center py-10 text-slate-400 italic">No quizzes available right now.</div>}
+            </div>
+        </div>
+    </div>
+  );
+
+  // Student Quiz View
   return (
     <div className="min-h-screen bg-slate-50 p-4 pb-24">
       <div className="max-w-2xl mx-auto space-y-6">
-        <div className="bg-white p-6 rounded-xl shadow-sm">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
             <div className="flex justify-between mb-4">
-                <h1 className="text-2xl font-bold">{quiz.title}</h1>
-                <button onClick={() => setMode('landing')} className="text-xs text-slate-400">Exit</button>
+                <h1 className="text-2xl font-bold text-slate-800">{activeQuiz.title}</h1>
+                <button onClick={() => setView('student-select')} className="text-xs font-bold text-slate-400 hover:text-indigo-600">EXIT</button>
             </div>
-            <input className="w-full p-3 border rounded" placeholder="Your Name" value={studentName} onChange={e => setStudentName(e.target.value)} disabled={!!aiResult} />
+            <div className="flex items-center gap-2 text-sm text-slate-500 bg-slate-50 p-2 rounded-lg justify-between">
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                    Logged in as <b>{user.displayName}</b>
+                </div>
+                <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
+                     Attempt {attemptsCount} / {activeQuiz.maxAttempts || 1}
+                </div>
+            </div>
+            {alreadyTaken && <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3">
+                <Lock className="w-5 h-5 mt-0.5 shrink-0"/> 
+                <div className="text-sm">
+                    <div className="font-bold">Quiz Submitted</div>
+                    <div>You have reached the maximum attempts for this quiz. Your previous result is shown below.</div>
+                </div>
+            </div>}
         </div>
-        {quiz.questions.map((q, i) => (
-            <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm space-y-4">
-                <div className="border-b pb-4"><span className="text-xs font-bold text-slate-400">Q{i+1}</span><MathRenderer text={q.text} className="text-lg mt-1"/></div>
-                <textarea className="w-full p-3 border rounded font-mono text-sm" rows={2} placeholder="Type answer (LaTeX allowed)..." value={answers[q.id] || ''} onChange={e => setAnswers({...answers, [q.id]: e.target.value})} disabled={!!aiResult} />
-                <div className="bg-indigo-50 p-3 rounded min-h-[40px]"><span className="text-[10px] uppercase font-bold text-indigo-300 block mb-1">Preview</span><MathRenderer text={answers[q.id]} /></div>
-                
-                {aiResult?.evaluations?.[q.id] && q.showFeedback && (
-                    <div className={`p-3 rounded flex gap-2 items-start ${aiResult.evaluations[q.id].isCorrect ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
-                        {aiResult.evaluations[q.id].isCorrect ? <CheckCircle className="w-4 h-4 mt-1"/> : <XCircle className="w-4 h-4 mt-1"/>}
-                        <div className="text-sm">
-                            <div className="font-bold">{aiResult.evaluations[q.id].isCorrect ? "Correct" : "Needs Review"}</div>
-                            <div>{aiResult.evaluations[q.id].feedback}</div>
-                        </div>
+
+        {studentQuestions.map((q, i) => {
+             const result = aiResult?.evaluations?.[q.id] || aiResult?.[q.id];
+             return (
+                <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                    <div className="border-b border-slate-100 pb-4">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Question {i+1}</span>
+                        <MathRenderer text={q.text} />
                     </div>
-                )}
-                {aiResult?.evaluations?.[q.id] && !q.showFeedback && (
-                    <div className="p-3 bg-blue-50 text-blue-800 rounded flex gap-2 text-sm"><Lock className="w-4 h-4"/> Response Recorded</div>
-                )}
-            </div>
-        ))}
-        {!aiResult ? (
-            <button onClick={handleSubmitQuiz} disabled={isSubmitting} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold shadow hover:bg-indigo-700 flex justify-center items-center gap-2">
-                {isSubmitting && <Loader2 className="animate-spin w-4 h-4"/>} {isSubmitting ? submissionStatus : "Submit Quiz"}
+                    
+                    <textarea 
+                        className="w-full p-3 border border-slate-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none disabled:bg-slate-50 disabled:text-slate-500 transition" 
+                        rows={2} 
+                        placeholder="Type your answer here (LaTeX allowed)..." 
+                        value={studentAnswers[q.id] || ''} 
+                        onChange={e => setStudentAnswers({...studentAnswers, [q.id]: e.target.value})} 
+                        disabled={alreadyTaken} 
+                    />
+                    
+                    {!alreadyTaken && studentAnswers[q.id] && (
+                        <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                            <span className="text-[10px] uppercase font-bold text-indigo-400 block mb-1">Live Preview</span>
+                            <MathRenderer text={studentAnswers[q.id]} />
+                        </div>
+                    )}
+                    
+                    {alreadyTaken && result && q.showFeedback && (
+                        <div className={`p-4 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2 ${result.isCorrect ? "bg-green-50 text-green-800 border border-green-100" : "bg-red-50 text-red-800 border border-red-100"}`}>
+                            {result.isCorrect ? <CheckCircle className="w-5 h-5 mt-0.5 shrink-0"/> : <XCircle className="w-5 h-5 mt-0.5 shrink-0"/>}
+                            <div className="text-sm">
+                                <div className="font-bold">{result.isCorrect ? "Correct" : "Needs Review"}</div>
+                                <div className="opacity-90 mt-1">{result.feedback}</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+             )
+        })}
+
+        {!alreadyTaken && (
+            <button onClick={submitQuiz} disabled={isSubmitting} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:shadow-xl hover:-translate-y-0.5 transition flex justify-center items-center gap-2 disabled:opacity-70 disabled:translate-y-0 disabled:shadow-none">
+                {isSubmitting ? <Loader2 className="animate-spin w-5 h-5"/> : <CheckCircle className="w-5 h-5"/>} 
+                {isSubmitting ? "Grading..." : "Submit Quiz"}
             </button>
-        ) : (
-            <div className="bg-white p-6 rounded-xl shadow text-center">
-                <h3 className="text-xl font-bold text-slate-800">Submitted!</h3>
-                <p className="text-slate-500 mb-4">Your teacher has your results.</p>
-                <button onClick={() => {setAiResult(null); setAnswers({}); setSubmissionStatus('')}} className="text-indigo-600 font-bold">Take Another</button>
-            </div>
         )}
       </div>
     </div>
