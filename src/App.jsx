@@ -27,13 +27,16 @@ const TEACHER_EMAIL = import.meta.env.VITE_TEACHER_EMAIL || "";
 // ==================================================================================
 
 let app, auth, db;
-// Basic check to see if keys exist
 const isConfigured = FIREBASE_CONFIG.apiKey && GEMINI_API_KEY && TEACHER_EMAIL;
 
 if (isConfigured) {
-  app = initializeApp(FIREBASE_CONFIG);
-  auth = getAuth(app);
-  db = getFirestore(app);
+  try {
+    app = initializeApp(FIREBASE_CONFIG);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (e) {
+    console.error("Firebase Initialization Error:", e);
+  }
 }
 
 // --- Helpers ---
@@ -48,9 +51,9 @@ const shuffleArray = (array) => {
 
 const extractJSON = (text) => {
     try {
-        // Remove markdown code blocks
+        // 1. Remove markdown code blocks if AI adds them
         let clean = text.replace(/```json|```/g, '');
-        // Find the first '{' and last '}'
+        // 2. Find the first '{' and last '}' to strip external chatter
         const firstOpen = clean.indexOf('{');
         const lastClose = clean.lastIndexOf('}');
         if (firstOpen !== -1 && lastClose !== -1) {
@@ -88,13 +91,16 @@ const gradeWithAI = async (quiz, answers) => {
       }
     `;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    // CHANGED: Updated to 'gemini-2.5-flash' based on your available models list
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
     });
 
     if (!response.ok) {
-        throw new Error("AI Grading Failed: " + response.statusText);
+        const errText = await response.text();
+        console.error("AI Error Details:", errText);
+        throw new Error(`AI Error ${response.status}: ${response.statusText}`);
     }
 
     const data = await response.json();
@@ -105,7 +111,8 @@ const gradeWithAI = async (quiz, answers) => {
     }
     return null;
   } catch (e) { 
-    console.error("Grading Exception", e); 
+    console.error("Grading Exception", e);
+    alert(`AI Grading Failed: ${e.message}. The submission will be saved anyway.`);
     return null; 
   }
 };
@@ -122,7 +129,7 @@ const useKaTeX = () => {
   return isLoaded;
 };
 
-// --- Zero-Dependency Markdown Parser ---
+// --- Zero-Dependency Markdown Parser (No extra npm installs needed) ---
 
 const parseBold = (text) => {
     if (!text) return null;
@@ -222,8 +229,8 @@ const MathRenderer = ({ text }) => {
 
 export default function App() {
   if (!isConfigured) return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100">
-          <div className="bg-white p-8 rounded shadow text-center max-w-lg">
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+          <div className="bg-white p-8 rounded-xl shadow-lg max-w-lg text-center">
               <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4"/>
               <h1 className="font-bold text-xl mb-2">Configuration Missing</h1>
               <p className="text-slate-600 mb-4">Please check your <code>.env</code> file. Make sure keys start with <code>VITE_</code>.</p>
@@ -299,6 +306,7 @@ export default function App() {
     reader.onload = async (e) => {
         try {
             let text = e.target.result;
+            // Clean JS wrapper if present
             text = text.replace(/^\s*const\s+\w+\s*=\s*/, '').replace(/;\s*$/, '');
             const json = JSON.parse(text);
             
@@ -309,7 +317,7 @@ export default function App() {
             const newQuiz = {
                 ...json,
                 createdAt: Date.now(),
-                maxAttempts: json.maxAttempts || 3, 
+                maxAttempts: parseInt(json.maxAttempts) || 3, // Force number
                 randomize: json.randomize || false
             };
             await addDoc(collection(db, 'quizzes'), newQuiz);
@@ -342,13 +350,15 @@ export default function App() {
   const enterQuiz = async (quiz) => {
     setActiveQuiz(quiz);
     
+    // Fetch attempts
     const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
     const snap = await getDocs(q);
     const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
     const count = userSubmissions.length;
     
     setAttemptsCount(count);
-    const allowed = quiz.maxAttempts || 1;
+    // FIX: Strict integer parsing, default to 3 if missing
+    const allowed = parseInt(quiz.maxAttempts) || 3; 
 
     // IF ATTEMPTS REMAIN: Start Fresh
     if (count < allowed) {
@@ -371,6 +381,7 @@ export default function App() {
       setAlreadyTaken(false);
       setAiResult(null);
       setStudentAnswers({});
+      // Re-shuffle if needed
       setStudentQuestions(activeQuiz.randomize ? shuffleArray(activeQuiz.questions) : activeQuiz.questions);
   };
 
@@ -379,10 +390,11 @@ export default function App() {
     setIsSubmitting(true);
     
     const gradingRaw = await gradeWithAI(activeQuiz, studentAnswers);
+    // If grading failed (null), use empty object so app doesn't crash
     const grading = gradingRaw?.evaluations ? gradingRaw : { evaluations: {} };
     
     if (!gradingRaw) {
-        alert("Note: AI Grading unavailable. Your submission will still be saved.");
+        console.warn("AI Grading returned null/failed.");
     }
     
     await addDoc(collection(db, 'submissions'), {
@@ -429,13 +441,10 @@ export default function App() {
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <button onClick={createQuiz} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 font-bold transition group">
-                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-indigo-100 transition"><Plus className="w-6 h-6"/></div>
-                Create Blank Quiz
+                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-indigo-100 transition"><Plus className="w-6 h-6"/></div> Create Blank Quiz
             </button>
-            
             <button onClick={() => fileInputRef.current?.click()} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-emerald-500 hover:text-emerald-600 hover:bg-emerald-50 font-bold transition group">
-                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-emerald-100 transition"><Upload className="w-6 h-6"/></div>
-                Upload Quiz JSON
+                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-emerald-100 transition"><Upload className="w-6 h-6"/></div> Upload Quiz JSON
             </button>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
 
@@ -589,15 +598,15 @@ export default function App() {
                 <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> Logged in as <b>{user.displayName}</b></div>
                 <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
                      {/* Logic: If taking quiz (alreadyTaken=false), show "Attempt X". If viewing (true), show "Completed" */}
-                     {!alreadyTaken ? `Attempt ${attemptsCount + 1} / ${activeQuiz.maxAttempts || 1}` : "Review Mode"}
+                     {!alreadyTaken ? `Attempt ${attemptsCount + 1} / ${parseInt(activeQuiz.maxAttempts) || 1}` : "Review Mode"}
                 </div>
             </div>
             
             {/* RETAKE BLOCK */}
-            {alreadyTaken && attemptsCount < (activeQuiz.maxAttempts || 1) && (
+            {alreadyTaken && attemptsCount < (parseInt(activeQuiz.maxAttempts) || 1) && (
                 <div className="mt-4 p-4 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-xl flex flex-col items-center gap-3 text-center animate-in fade-in slide-in-from-top-2">
                     <div className="font-bold">Attempt {attemptsCount} Completed</div>
-                    <div className="text-sm">You have { (activeQuiz.maxAttempts || 1) - attemptsCount } attempts remaining.</div>
+                    <div className="text-sm">You have { (parseInt(activeQuiz.maxAttempts) || 1) - attemptsCount } attempts remaining.</div>
                     <button onClick={retakeQuiz} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow hover:bg-indigo-700 transition flex items-center gap-2">
                         <RefreshCw className="w-4 h-4"/> Retake Quiz
                     </button>
@@ -605,7 +614,7 @@ export default function App() {
             )}
 
             {/* LOCKOUT BLOCK */}
-            {alreadyTaken && attemptsCount >= (activeQuiz.maxAttempts || 1) && (
+            {alreadyTaken && attemptsCount >= (parseInt(activeQuiz.maxAttempts) || 1) && (
                 <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3">
                     <Lock className="w-5 h-5 mt-0.5 shrink-0"/> 
                     <div className="text-sm">
