@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BookOpen, Edit3, Plus, Trash2, Save, CheckCircle, XCircle, Users, Loader2, Lock, LogOut, LayoutList, Shuffle, AlertTriangle, ArrowLeft, RefreshCw, Upload, FileJson, Image as ImageIcon, Copy, Eye, EyeOff } from 'lucide-react';
+import { BookOpen, Edit3, Plus, Trash2, Save, CheckCircle, XCircle, Users, Loader2, Lock, LogOut, LayoutList, Shuffle, AlertTriangle, ArrowLeft, RefreshCw, Upload, FileJson, Image as ImageIcon, Copy, Eye, EyeOff, History } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
@@ -41,7 +41,7 @@ if (isConfigured) {
 
 // --- Helpers ---
 const shuffleArray = (array) => {
-  if (!array || !Array.isArray(array)) return [];
+  if (!array) return [];
   const newArr = [...array];
   for (let i = newArr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -52,7 +52,9 @@ const shuffleArray = (array) => {
 
 const extractJSON = (text) => {
     try {
+        // 1. Remove markdown code blocks
         let clean = text.replace(/```json|```/g, '');
+        // 2. Find the first '{' and last '}' to strip intro/outro text
         const firstOpen = clean.indexOf('{');
         const lastClose = clean.lastIndexOf('}');
         if (firstOpen !== -1 && lastClose !== -1) {
@@ -74,25 +76,24 @@ const gradeWithAI = async (quiz, answers) => {
 
       Questions & Student Answers:
       ${quiz.questions.map(q => `
-        [ID: ${q.id}]
+        [ID: "${q.id}"]
         Question: ${q.text}
         Student Answer: ${answers[q.id] || "No answer provided"}
       `).join('\n----------------\n')}
 
       INSTRUCTIONS:
-      1. Check if the math is correct. LaTeX variations are allowed.
+      1. Check if the math is correct. Implicit multiplication and LaTeX variations are allowed.
       2. If answer is blank/empty, it is incorrect.
-      3. Return ONLY valid JSON. Keys must match the provided IDs exactly (e.g. "101").
+      3. Return ONLY valid JSON. The keys MUST match the Question IDs exactly.
       
       Structure:
       {
         "evaluations": {
-          "101": { "isCorrect": boolean, "feedback": "Brief feedback string" }
+          "QUESTION_ID": { "isCorrect": boolean, "feedback": "Brief feedback string" }
         }
       }
     `;
 
-    // Using gemini-2.5-flash (Verified from your list)
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
@@ -118,8 +119,18 @@ const useKaTeX = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
     if (window.katex) { setIsLoaded(true); return; }
-    const link = document.createElement('link'); link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; link.rel = "stylesheet"; document.head.appendChild(link);
-    const script = document.createElement('script'); script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; script.onload = () => setIsLoaded(true); document.body.appendChild(script);
+    
+    const link = document.createElement('link'); 
+    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; 
+    link.rel = "stylesheet"; 
+    link.crossOrigin = "anonymous"; // Fix for tracking prevention
+    document.head.appendChild(link);
+    
+    const script = document.createElement('script'); 
+    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; 
+    script.crossOrigin = "anonymous"; // Fix for tracking prevention
+    script.onload = () => setIsLoaded(true); 
+    document.body.appendChild(script);
   }, []);
   return isLoaded;
 };
@@ -173,13 +184,13 @@ const MathRenderer = ({ text }) => {
       {blockParts.map((part, index) => {
         if (part.startsWith('$$')) {
             const math = part.slice(2, -2);
-            return <div key={index} className="my-4 text-center overflow-x-auto p-1" ref={node => { if (node) try { window.katex.render(math, node, { displayMode: true, throwOnError: false }); } catch (e) { node.textContent = e.message; } }} />;
+            return <div key={index} className="my-4 text-center overflow-x-auto p-1" ref={node => { if (node && window.katex) try { window.katex.render(math, node, { displayMode: true, throwOnError: false }); } catch (e) { node.textContent = e.message; } }} />;
         } else {
             const inlineParts = part.split(/(\$[\s\S]*?\$)/g);
             return <span key={index}>{inlineParts.map((subPart, subIndex) => {
                 if (subPart.startsWith('$')) {
                     const math = subPart.slice(1, -1);
-                    return <span key={subIndex} className="mx-0.5 inline-block" ref={node => { if (node) try { window.katex.render(math, node, { displayMode: false, throwOnError: false }); } catch (e) { node.textContent = e.message; } }} />;
+                    return <span key={subIndex} className="mx-0.5 inline-block" ref={node => { if (node && window.katex) try { window.katex.render(math, node, { displayMode: false, throwOnError: false }); } catch (e) { node.textContent = e.message; } }} />;
                 } else {
                     return <span key={subIndex}>{parseMarkdown(subPart)}</span>;
                 }
@@ -197,16 +208,22 @@ export default function App() {
   const [view, setView] = useState('loading'); 
   const [quizzes, setQuizzes] = useState([]);
   const [activeQuiz, setActiveQuiz] = useState(null);
-  const [submissions, setSubmissions] = useState([]);
   
+  // THIS IS THE VARIABLE THAT WAS LIKELY MISSING/CAUSING THE ERROR
+  const [submissions, setSubmissions] = useState([]); 
+  
+  // Student State
   const [studentAnswers, setStudentAnswers] = useState({});
   const [studentQuestions, setStudentQuestions] = useState([]); 
   const [alreadyTaken, setAlreadyTaken] = useState(false);
-  const [attemptsUsed, setAttemptsUsed] = useState(0); 
+  const [attemptsCount, setAttemptsCount] = useState(0); 
   const [aiResult, setAiResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [viewingResult, setViewingResult] = useState(false);
-  const [appLoading, setAppLoading] = useState(false); // New explicit loading state
+  
+  // History state
+  const [history, setHistory] = useState([]);
+  const [viewIndex, setViewIndex] = useState(0);
 
   const fileInputRef = useRef(null);
 
@@ -274,56 +291,58 @@ export default function App() {
     alert("Quiz Saved!");
   };
 
-  // --- FIXED ENTER QUIZ ---
   const enterQuiz = async (quiz) => {
-    setAppLoading(true); // Prevent render until ready
     setActiveQuiz(quiz);
+    const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
+    const snap = await getDocs(q);
+    const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
     
-    try {
-        const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
-        const snap = await getDocs(q);
-        const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
-        const count = userSubmissions.length;
-        
-        setAttemptsUsed(count);
-        const allowed = parseInt(quiz.maxAttempts) || 3; 
+    setHistory(userSubmissions);
+    setViewIndex(0);
 
-        if (count < allowed) {
-            setAlreadyTaken(false);
-            setViewingResult(false);
-            setAiResult(null);
-            setStudentAnswers({});
-            // Safety check for questions array
-            const qs = quiz.questions || [];
-            setStudentQuestions(quiz.randomize ? shuffleArray(qs) : qs);
-        } else {
-            const latest = userSubmissions[0];
-            setAlreadyTaken(true);
-            setViewingResult(true);
-            setAiResult(latest.grading);
-            setStudentAnswers(latest.answers);
-            setStudentQuestions(quiz.questions || []); 
-        }
-        setView('student-quiz');
-    } catch (e) {
-        console.error("Error entering quiz:", e);
-        alert("Error loading quiz details.");
-    } finally {
-        setAppLoading(false);
+    const count = userSubmissions.length;
+    setAttemptsCount(count);
+    const allowed = parseInt(quiz.maxAttempts) || 3; 
+
+    if (count < allowed) {
+        setAlreadyTaken(false);
+        setViewingResult(false);
+        setAiResult(null);
+        setStudentAnswers({});
+        const qs = quiz.questions || [];
+        setStudentQuestions(quiz.randomize ? shuffleArray(qs) : qs);
+    } else {
+        const latest = userSubmissions[0];
+        setAlreadyTaken(true);
+        setViewingResult(true);
+        setAiResult(latest.grading);
+        setStudentAnswers(latest.answers);
+        setStudentQuestions(quiz.questions); 
     }
+    setView('student-quiz');
   };
 
   const retakeQuiz = () => {
-      setAlreadyTaken(false);
       setViewingResult(false);
+      setAlreadyTaken(false);
       setAiResult(null);
       setStudentAnswers({});
       const qs = activeQuiz.questions || [];
       setStudentQuestions(activeQuiz.randomize ? shuffleArray(qs) : qs);
   };
 
+  const loadAttempt = (index) => {
+      const sub = history[index];
+      setViewIndex(index);
+      setStudentAnswers(sub.answers);
+      const g = sub.grading;
+      setAiResult(g.evaluations ? g.evaluations : g); 
+      // Use standard order for review
+      setStudentQuestions(activeQuiz.questions);
+  };
+
   const submitQuiz = async () => {
-    if (alreadyTaken) return;
+    if (viewingResult) return;
     setIsSubmitting(true);
     
     let grading = { evaluations: {} };
@@ -337,7 +356,7 @@ export default function App() {
         }
     }
     
-    await addDoc(collection(db, 'submissions'), {
+    const newSub = {
         quizId: activeQuiz.id,
         userId: user.uid,
         studentName: user.displayName,
@@ -345,18 +364,24 @@ export default function App() {
         answers: studentAnswers,
         grading: grading,
         timestamp: Date.now()
-    });
+    };
 
+    await addDoc(collection(db, 'submissions'), newSub);
+
+    const newHistory = [newSub, ...history];
+    setHistory(newHistory);
+    setViewIndex(0);
+    
     setAiResult(grading);
     setAlreadyTaken(true); 
     setViewingResult(true);
-    setAttemptsUsed(c => c + 1); 
+    setAttemptsCount(c => c + 1); 
     setIsSubmitting(false);
   };
 
   // --- RENDERING ---
 
-  if (view === 'loading' || appLoading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-indigo-600"/></div>;
+  if (view === 'loading') return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-indigo-600"/></div>;
 
   if (view === 'login') return (
     <div className="h-screen flex items-center justify-center bg-slate-100 p-4">
@@ -451,7 +476,7 @@ export default function App() {
             </div>
           </div>
           <div className="space-y-4">
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 font-bold text-slate-700 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Submissions ({submissions.length})</div>
+            <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 font-bold text-slate-700 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Submissions ({submissions?.length || 0})</div>
             <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
                 {submissions.map(sub => (
                     <div key={sub.id} className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 text-sm relative group">
@@ -462,7 +487,8 @@ export default function App() {
                         </div>
                         <div className="space-y-4">
                             {activeQuiz.questions.map((q, i) => {
-                                const grade = sub.grading?.evaluations?.[q.id] || sub.grading?.[q.id];
+                                const subGrade = sub.grading?.evaluations ? sub.grading.evaluations : sub.grading;
+                                const grade = subGrade?.[q.id];
                                 return (
                                     <div key={q.id} className="border-l-2 border-slate-100 pl-3">
                                         <div className="flex justify-between items-center mb-1">
@@ -506,6 +532,11 @@ export default function App() {
   );
 
   // STUDENT QUIZ
+  const currentSubmission = viewingResult ? history[viewIndex] : null;
+  const currentGrading = currentSubmission ? (currentSubmission.grading.evaluations || currentSubmission.grading) : {};
+  const currentAnswers = viewingResult ? currentSubmission.answers : studentAnswers;
+  const displayQuestions = viewingResult ? activeQuiz.questions : studentQuestions; 
+
   return (
     <div className="min-h-screen bg-slate-50 p-4 pb-24">
       <div className="max-w-2xl mx-auto space-y-6">
@@ -515,45 +546,70 @@ export default function App() {
                 <button onClick={() => setView('student-select')} className="text-xs font-bold text-slate-400 hover:text-indigo-600">EXIT</button>
             </div>
             
-            <div className="flex items-center justify-between gap-2 text-sm text-slate-500 bg-slate-50 p-2 rounded-lg">
-                <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> Logged in as <b>{user.displayName}</b></div>
-                <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
-                     {!viewingResult ? `Attempt ${attemptsUsed + 1} / ${parseInt(activeQuiz.maxAttempts) || 3}` : "Review Mode"}
+            <div className="flex flex-col gap-3 bg-slate-50 p-3 rounded-lg">
+                <div className="flex items-center justify-between text-sm text-slate-500">
+                    <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> <b>{user.displayName}</b></div>
+                    <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
+                        {!viewingResult ? `Attempt ${attemptsCount + 1} / ${parseInt(activeQuiz.maxAttempts) || 3}` : `Viewing Attempt ${history.length - viewIndex}`}
+                    </div>
                 </div>
+                {viewingResult && history.length > 0 && (
+                    <div className="flex gap-2 overflow-x-auto pb-1 border-t border-slate-200 pt-2 mt-2">
+                        {history.map((_, idx) => (
+                             <button key={idx} onClick={() => loadAttempt(idx)} className={`text-xs px-3 py-1 rounded-full border whitespace-nowrap transition ${viewIndex === idx ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>Attempt {history.length - idx}</button>
+                        ))}
+                    </div>
+                )}
             </div>
             
-            {viewingResult && attemptsUsed < (parseInt(activeQuiz.maxAttempts) || 3) && (
-                <div className="mt-4 p-4 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-xl flex flex-col items-center gap-3 text-center animate-in fade-in slide-in-from-top-2">
-                    <div className="font-bold">Attempt {attemptsUsed} Completed</div>
-                    <div className="text-sm">You have { (parseInt(activeQuiz.maxAttempts) || 3) - attemptsUsed } attempts remaining.</div>
+            {viewingResult && attemptsCount < (parseInt(activeQuiz.maxAttempts) || 3) && (
+                <div className="mt-4 p-4 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-xl flex flex-col items-center gap-3 text-center">
+                    <div className="font-bold">Attempt Completed</div>
+                    <div className="text-sm">You have { (parseInt(activeQuiz.maxAttempts) || 3) - attemptsCount } attempts remaining.</div>
                     <button onClick={retakeQuiz} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow hover:bg-indigo-700 transition flex items-center gap-2"><RefreshCw className="w-4 h-4"/> Retake Quiz</button>
                 </div>
             )}
 
-            {viewingResult && attemptsUsed >= (parseInt(activeQuiz.maxAttempts) || 3) && (
-                <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3"><Lock className="w-5 h-5 mt-0.5 shrink-0"/> <div className="text-sm"><div className="font-bold">Max Attempts Reached</div><div>You have used all {activeQuiz.maxAttempts || 3} attempts. Your final results are below.</div></div></div>
+            {viewingResult && attemptsCount >= (parseInt(activeQuiz.maxAttempts) || 3) && (
+                <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3"><Lock className="w-5 h-5 mt-0.5 shrink-0"/> <div className="text-sm"><div className="font-bold">Max Attempts Reached</div></div></div>
             )}
         </div>
 
-        {studentQuestions.map((q, i) => {
-             const result = aiResult?.evaluations?.[q.id] || aiResult?.[q.id];
+        {displayQuestions.map((q, i) => {
+             const result = currentGrading?.[q.id];
+             const ans = currentAnswers[q.id] || "";
+             
              return (
                 <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
                     <div className="border-b border-slate-100 pb-4">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Question {i+1}</span>
                         <MathRenderer text={q.text} />
                     </div>
+                    
                     <div className="w-full">
                       {!viewingResult ? (
-                        <textarea className="w-full p-3 border border-slate-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition" rows={2} placeholder="Type your answer here (LaTeX allowed)..." value={studentAnswers[q.id] || ''} onChange={e => setStudentAnswers({...studentAnswers, [q.id]: e.target.value})} />
+                        <textarea className="w-full p-3 border border-slate-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition" rows={2} placeholder="Type your answer here (LaTeX allowed)..." value={ans} onChange={e => setStudentAnswers({...studentAnswers, [q.id]: e.target.value})} />
                       ) : (
                         <div className="w-full border border-slate-200 rounded-lg overflow-hidden bg-white">
-                           <div className="p-3 border-b border-slate-50"><div className="text-xs font-bold text-slate-400 mb-1 uppercase tracking-wider">Your Answer:</div><MathRenderer text={studentAnswers[q.id] || "(No answer)"} /></div>
-                           <div className="bg-slate-50 p-2 flex justify-between items-center gap-2"><code className="text-xs text-slate-400 font-mono truncate flex-1 pl-1">{studentAnswers[q.id] || ""}</code><button onClick={() => navigator.clipboard.writeText(studentAnswers[q.id] || "")} className="text-slate-400 hover:text-indigo-600 p-1 transition" title="Copy Raw Text"><Copy className="w-3 h-3"/></button></div>
+                           <div className="p-3 border-b border-slate-50 bg-white min-h-[40px]">
+                               <div className="text-xs font-bold text-slate-400 mb-1 uppercase tracking-wider">Your Answer:</div>
+                               <MathRenderer text={ans || "(No answer)"} />
+                           </div>
+                           <div className="bg-slate-50 p-2 flex justify-between items-center gap-2">
+                               <code className="text-[10px] text-slate-400 font-mono truncate flex-1 pl-1">{ans || ""}</code>
+                               <button onClick={() => navigator.clipboard.writeText(ans)} className="text-slate-400 hover:text-indigo-600 p-1 transition" title="Copy Raw Text"><Copy className="w-3 h-3"/></button>
+                           </div>
                         </div>
                       )}
                     </div>
-                    {!viewingResult && studentAnswers[q.id] && (<div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100"><span className="text-[10px] uppercase font-bold text-indigo-400 block mb-1">Live Preview</span><MathRenderer text={studentAnswers[q.id]} /></div>)}
+                    
+                    {!viewingResult && ans && (
+                        <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                            <span className="text-[10px] uppercase font-bold text-indigo-400 block mb-1">Live Preview</span>
+                            <MathRenderer text={ans} />
+                        </div>
+                    )}
+                    
                     {viewingResult && result && q.showFeedback && (
                         <div className={`p-4 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2 ${result.isCorrect ? "bg-green-50 text-green-800 border border-green-100" : "bg-red-50 text-red-800 border border-red-100"}`}>
                             {result.isCorrect ? <CheckCircle className="w-5 h-5 mt-0.5 shrink-0"/> : <XCircle className="w-5 h-5 mt-0.5 shrink-0"/>}
