@@ -45,27 +45,45 @@ const shuffleArray = (array) => {
   return newArr;
 };
 
+const extractJSON = (text) => {
+    try {
+        // 1. Remove markdown code blocks
+        let clean = text.replace(/```json|```/g, '');
+        // 2. Find the first '{' and last '}'
+        const firstOpen = clean.indexOf('{');
+        const lastClose = clean.lastIndexOf('}');
+        if (firstOpen !== -1 && lastClose !== -1) {
+            clean = clean.substring(firstOpen, lastClose + 1);
+            return JSON.parse(clean);
+        }
+    } catch (e) {
+        console.error("JSON Parse Error:", e);
+    }
+    return null;
+};
+
 const gradeWithAI = async (quiz, answers) => {
   if (!GEMINI_API_KEY) return null;
   try {
     const prompt = `
-      You are a math teacher grading a quiz.
-      Quiz Title: ${quiz.title}
+      You are a math teacher. Grade this quiz.
+      Quiz: ${quiz.title}
 
+      I need you to output a JSON object ONLY. Do not write any intro text.
+      
       Questions & Student Answers:
       ${quiz.questions.map(q => `
-        [ID: ${q.id}]
-        Question: ${q.text}
-        Student Answer: ${answers[q.id] || "No answer provided"}
-      `).join('\n----------------\n')}
+        ID: "${q.id}"
+        Prompt: ${q.text}
+        Student Answer: ${answers[q.id] || "No answer"}
+      `).join('\n---\n')}
 
       INSTRUCTIONS:
-      1. Check if the math is correct. Implicit multiplication and LaTeX variations are allowed.
-      2. If the answer is blank/empty, it is incorrect.
-      3. Return ONLY valid JSON. Structure:
+      1. Implicit multiplication/LaTeX variations are CORRECT.
+      2. Output JSON format:
       {
         "evaluations": {
-          "QUESTION_ID_HERE": { "isCorrect": boolean, "feedback": "Brief feedback string (max 15 words)" }
+          "QUESTION_ID_AS_STRING": { "isCorrect": boolean, "feedback": "Short feedback" }
         }
       }
     `;
@@ -76,20 +94,14 @@ const gradeWithAI = async (quiz, answers) => {
     });
 
     const data = await response.json();
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     
     if (text) {
-        // Cleaning: Remove markdown code blocks if present
-        text = text.replace(/```json\n?|\n?```/g, '');
-        // Find the JSON object
-        const match = text.match(/\{[\s\S]*\}/);
-        if (match) {
-            return JSON.parse(match[0]);
-        }
+        return extractJSON(text);
     }
     return null;
   } catch (e) { 
-    console.error("Grading Error", e); 
+    console.error("API Error", e); 
     return null; 
   }
 };
@@ -101,14 +113,8 @@ const useKaTeX = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
     if (window.katex) { setIsLoaded(true); return; }
-    const link = document.createElement('link'); 
-    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; 
-    link.rel = "stylesheet"; 
-    document.head.appendChild(link);
-    const script = document.createElement('script'); 
-    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; 
-    script.onload = () => setIsLoaded(true); 
-    document.body.appendChild(script);
+    const link = document.createElement('link'); link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; link.rel = "stylesheet"; document.head.appendChild(link);
+    const script = document.createElement('script'); script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; script.onload = () => setIsLoaded(true); document.body.appendChild(script);
   }, []);
   return isLoaded;
 };
@@ -124,10 +130,8 @@ const parseBold = (text) => {
 
 const parseLinks = (text) => {
     if (!text) return null;
-    // Regex for [text](url)
     const linkRegex = /\[(.*?)\]\((.*?)\)/g;
     const parts = text.split(linkRegex);
-    
     if (parts.length === 1) return parseBold(text);
 
     const result = [];
@@ -148,10 +152,8 @@ const parseLinks = (text) => {
 
 const parseMarkdown = (text) => {
     if (!text) return null;
-    // Regex for images ![alt](url)
     const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
     const parts = text.split(imgRegex);
-    
     if (parts.length === 1) return parseLinks(text);
 
     const result = [];
@@ -226,8 +228,8 @@ export default function App() {
   // Student State
   const [studentAnswers, setStudentAnswers] = useState({});
   const [studentQuestions, setStudentQuestions] = useState([]); 
-  const [alreadyTaken, setAlreadyTaken] = useState(false);
-  const [attemptsCount, setAttemptsCount] = useState(0);
+  const [viewingResult, setViewingResult] = useState(false); // TRUE = looking at past grades
+  const [attemptsUsed, setAttemptsUsed] = useState(0);
   const [aiResult, setAiResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -285,7 +287,6 @@ export default function App() {
     reader.onload = async (e) => {
         try {
             let text = e.target.result;
-            // Clean JS wrapper if present
             text = text.replace(/^\s*const\s+\w+\s*=\s*/, '').replace(/;\s*$/, '');
             const json = JSON.parse(text);
             
@@ -296,7 +297,7 @@ export default function App() {
             const newQuiz = {
                 ...json,
                 createdAt: Date.now(),
-                maxAttempts: json.maxAttempts || 1, // Default 1 if missing
+                maxAttempts: json.maxAttempts || 1, 
                 randomize: json.randomize || false
             };
             await addDoc(collection(db, 'quizzes'), newQuiz);
@@ -329,39 +330,40 @@ export default function App() {
   const enterQuiz = async (quiz) => {
     setActiveQuiz(quiz);
     
-    // Check previous attempts
+    // Fetch previous attempts
     const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
     const snap = await getDocs(q);
     const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
     const count = userSubmissions.length;
-    setAttemptsCount(count);
     
+    setAttemptsUsed(count);
     const allowed = quiz.maxAttempts || 1;
 
-    // Logic: If they have attempts left, Start Fresh. If not, show results.
+    // Logic: If user has attempts left, they start fresh.
+    // If they are out of attempts, they enter 'Review Mode' (viewingResult = true)
     if (count < allowed) {
-        setAlreadyTaken(false);
+        setViewingResult(false);
         setAiResult(null);
         setStudentAnswers({});
         setStudentQuestions(quiz.randomize ? shuffleArray(quiz.questions) : quiz.questions);
     } else {
-        // Locked out -> Show latest
+        // LOCKOUT -> Review Mode
         const latest = userSubmissions[0];
-        setAlreadyTaken(true);
+        setViewingResult(true);
         setAiResult(latest.grading);
         setStudentAnswers(latest.answers);
-        setStudentQuestions(quiz.questions); 
+        setStudentQuestions(quiz.questions); // Review standard order usually preferred, but using original order here
     }
     setView('student-quiz');
   };
 
   const submitQuiz = async () => {
-    if (alreadyTaken) return;
+    if (viewingResult) return;
     setIsSubmitting(true);
     
     const gradingRaw = await gradeWithAI(activeQuiz, studentAnswers);
-    // Ensure we have the correct structure even if AI messes up
-    const grading = gradingRaw?.evaluations ? gradingRaw : { evaluations: gradingRaw };
+    // Fallback if AI fails: create an empty evaluations object so app doesn't crash
+    const grading = gradingRaw?.evaluations ? gradingRaw : { evaluations: {} };
     
     await addDoc(collection(db, 'submissions'), {
         quizId: activeQuiz.id,
@@ -374,9 +376,17 @@ export default function App() {
     });
 
     setAiResult(grading);
-    setAlreadyTaken(true); // Temporarily show results
-    setAttemptsCount(c => c + 1); 
+    setViewingResult(true); // Switch to view mode to show results
+    setAttemptsUsed(c => c + 1); // Increment local count
     setIsSubmitting(false);
+  };
+
+  const retakeQuiz = () => {
+      setViewingResult(false);
+      setAiResult(null);
+      setStudentAnswers({});
+      // Re-shuffle if randomization is on
+      setStudentQuestions(activeQuiz.randomize ? shuffleArray(activeQuiz.questions) : activeQuiz.questions);
   };
 
   // --- RENDERING ---
@@ -530,7 +540,6 @@ export default function App() {
     </div>
   );
 
-  // STUDENT SELECT
   if (view === 'student-select') return (
     <div className="min-h-screen bg-slate-50 p-6 flex flex-col items-center">
         <div className="w-full max-w-md space-y-6">
@@ -538,7 +547,6 @@ export default function App() {
                 <h1 className="text-lg font-bold text-slate-800">Available Quizzes</h1>
                 <button onClick={() => signOut(auth)} className="text-xs font-bold text-slate-500 hover:text-red-600">Log Out</button>
             </div>
-            
             <div className="space-y-3">
                 {quizzes.map(q => (
                     <button key={q.id} onClick={() => enterQuiz(q)} className="w-full bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:border-indigo-500 hover:shadow-md text-left transition group">
@@ -563,40 +571,41 @@ export default function App() {
                 <h1 className="text-2xl font-bold text-slate-800">{activeQuiz.title}</h1>
                 <button onClick={() => setView('student-select')} className="text-xs font-bold text-slate-400 hover:text-indigo-600">EXIT</button>
             </div>
-            <div className="flex items-center gap-2 text-sm text-slate-500 bg-slate-50 p-2 rounded-lg justify-between">
-                <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                    Logged in as <b>{user.displayName}</b>
-                </div>
+            
+            {/* ATTEMPT COUNTER: Now displays correct Current Attempt */}
+            <div className="flex items-center justify-between gap-2 text-sm text-slate-500 bg-slate-50 p-2 rounded-lg">
+                <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> Logged in as <b>{user.displayName}</b></div>
                 <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
-                     Attempt {attemptsCount} / {activeQuiz.maxAttempts || 1}
+                     {/* Show "Attempt X / Max" */}
+                     Attempt {Math.min(attemptsUsed + 1, activeQuiz.maxAttempts || 1)} / {activeQuiz.maxAttempts || 1}
                 </div>
             </div>
             
-            {/* RETAKE LOGIC: Only show if locked out AND has retakes left */}
-            {alreadyTaken && attemptsCount < (activeQuiz.maxAttempts || 1) && (
+            {/* RETAKE BLOCK */}
+            {viewingResult && attemptsUsed < (activeQuiz.maxAttempts || 1) && (
                 <div className="mt-4 p-4 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-xl flex flex-col items-center gap-3 text-center animate-in fade-in slide-in-from-top-2">
-                    <div className="font-bold">Attempt {attemptsCount} Submitted.</div>
-                    <div className="text-sm">You have { (activeQuiz.maxAttempts || 1) - attemptsCount } attempts remaining.</div>
-                    <button onClick={() => { setAlreadyTaken(false); setStudentAnswers({}); setAiResult(null); }} className="px-4 py-2 bg-indigo-600 text-white rounded font-bold shadow hover:bg-indigo-700">Take Again</button>
+                    <div className="font-bold">Attempt {attemptsUsed} Completed</div>
+                    <div className="text-sm">You have { (activeQuiz.maxAttempts || 1) - attemptsUsed } attempts remaining.</div>
+                    <button onClick={retakeQuiz} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow hover:bg-indigo-700 transition flex items-center gap-2">
+                        <RefreshCw className="w-4 h-4"/> Retake Quiz
+                    </button>
                 </div>
             )}
 
-            {alreadyTaken && attemptsCount >= (activeQuiz.maxAttempts || 1) && (
+            {/* LOCKOUT BLOCK */}
+            {viewingResult && attemptsUsed >= (activeQuiz.maxAttempts || 1) && (
                 <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3">
                     <Lock className="w-5 h-5 mt-0.5 shrink-0"/> 
                     <div className="text-sm">
-                        <div className="font-bold">Quiz Submitted</div>
-                        <div>You have reached the maximum attempts for this quiz. Results shown below.</div>
+                        <div className="font-bold">Max Attempts Reached</div>
+                        <div>You have used all {activeQuiz.maxAttempts || 1} attempts. Your final results are below.</div>
                     </div>
                 </div>
             )}
         </div>
 
         {studentQuestions.map((q, i) => {
-             // Robust AI Result Parsing
              const result = aiResult?.evaluations?.[q.id] || aiResult?.[q.id];
-             
              return (
                 <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
                     <div className="border-b border-slate-100 pb-4">
@@ -610,17 +619,17 @@ export default function App() {
                         placeholder="Type your answer here (LaTeX allowed)..." 
                         value={studentAnswers[q.id] || ''} 
                         onChange={e => setStudentAnswers({...studentAnswers, [q.id]: e.target.value})} 
-                        disabled={alreadyTaken} 
+                        disabled={viewingResult} 
                     />
                     
-                    {!alreadyTaken && studentAnswers[q.id] && (
+                    {!viewingResult && studentAnswers[q.id] && (
                         <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
                             <span className="text-[10px] uppercase font-bold text-indigo-400 block mb-1">Live Preview</span>
                             <MathRenderer text={studentAnswers[q.id]} />
                         </div>
                     )}
                     
-                    {alreadyTaken && result && q.showFeedback && (
+                    {viewingResult && result && q.showFeedback && (
                         <div className={`p-4 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2 ${result.isCorrect ? "bg-green-50 text-green-800 border border-green-100" : "bg-red-50 text-red-800 border border-red-100"}`}>
                             {result.isCorrect ? <CheckCircle className="w-5 h-5 mt-0.5 shrink-0"/> : <XCircle className="w-5 h-5 mt-0.5 shrink-0"/>}
                             <div className="text-sm">
@@ -633,7 +642,7 @@ export default function App() {
              )
         })}
 
-        {!alreadyTaken && (
+        {!viewingResult && (
             <button onClick={submitQuiz} disabled={isSubmitting} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:shadow-xl hover:-translate-y-0.5 transition flex justify-center items-center gap-2 disabled:opacity-70 disabled:translate-y-0 disabled:shadow-none">
                 {isSubmitting ? <Loader2 className="animate-spin w-5 h-5"/> : <CheckCircle className="w-5 h-5"/>} 
                 {isSubmitting ? "Grading..." : "Submit Quiz"}
