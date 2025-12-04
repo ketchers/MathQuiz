@@ -25,3 +25,4 @@ dist-ssr
 
 # Extra
 npm_run_dev.txt
+.env
