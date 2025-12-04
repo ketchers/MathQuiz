@@ -5,7 +5,7 @@ import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChang
 import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
 
 // ==================================================================================
-// 🔧 CONFIGURATION
+// 🔧 CONFIGURATION (Loaded from .env file)
 // ==================================================================================
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
@@ -27,6 +27,7 @@ const TEACHER_EMAIL = import.meta.env.VITE_TEACHER_EMAIL || "";
 // ==================================================================================
 
 let app, auth, db;
+// Basic check to see if keys exist
 const isConfigured = FIREBASE_CONFIG.apiKey && GEMINI_API_KEY && TEACHER_EMAIL;
 
 if (isConfigured) {
@@ -87,15 +88,12 @@ const gradeWithAI = async (quiz, answers) => {
       }
     `;
 
-    // CHANGED: Using stable model 'gemini-1.5-flash' instead of preview versions
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
     });
 
     if (!response.ok) {
-        const err = await response.text();
-        console.error("AI API Error:", err);
         throw new Error("AI Grading Failed: " + response.statusText);
     }
 
@@ -223,7 +221,15 @@ const MathRenderer = ({ text }) => {
 };
 
 export default function App() {
-  if (!isConfigured) return <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 font-bold text-red-500">Config Missing</div>;
+  if (!isConfigured) return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+          <div className="bg-white p-8 rounded shadow text-center max-w-lg">
+              <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4"/>
+              <h1 className="font-bold text-xl mb-2">Configuration Missing</h1>
+              <p className="text-slate-600 mb-4">Please check your <code>.env</code> file. Make sure keys start with <code>VITE_</code>.</p>
+          </div>
+      </div>
+  );
 
   const [user, setUser] = useState(null);
   const [view, setView] = useState('loading'); 
@@ -235,7 +241,7 @@ export default function App() {
   const [studentAnswers, setStudentAnswers] = useState({});
   const [studentQuestions, setStudentQuestions] = useState([]); 
   const [alreadyTaken, setAlreadyTaken] = useState(false);
-  const [attemptsCount, setAttemptsCount] = useState(0); // This is ATTEMPTS COMPLETED
+  const [attemptsCount, setAttemptsCount] = useState(0); 
   const [aiResult, setAiResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -303,7 +309,7 @@ export default function App() {
             const newQuiz = {
                 ...json,
                 createdAt: Date.now(),
-                maxAttempts: json.maxAttempts || 3, // Default to 3
+                maxAttempts: json.maxAttempts || 3, 
                 randomize: json.randomize || false
             };
             await addDoc(collection(db, 'quizzes'), newQuiz);
@@ -365,7 +371,6 @@ export default function App() {
       setAlreadyTaken(false);
       setAiResult(null);
       setStudentAnswers({});
-      // Re-shuffle if needed
       setStudentQuestions(activeQuiz.randomize ? shuffleArray(activeQuiz.questions) : activeQuiz.questions);
   };
 
@@ -374,7 +379,6 @@ export default function App() {
     setIsSubmitting(true);
     
     const gradingRaw = await gradeWithAI(activeQuiz, studentAnswers);
-    // If grading failed (null), use empty object so app doesn't crash
     const grading = gradingRaw?.evaluations ? gradingRaw : { evaluations: {} };
     
     if (!gradingRaw) {
@@ -580,7 +584,7 @@ export default function App() {
                 <button onClick={() => setView('student-select')} className="text-xs font-bold text-slate-400 hover:text-indigo-600">EXIT</button>
             </div>
             
-            {/* ATTEMPT COUNTER: Now displays correct Current Attempt */}
+            {/* ATTEMPT COUNTER */}
             <div className="flex items-center justify-between gap-2 text-sm text-slate-500 bg-slate-50 p-2 rounded-lg">
                 <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> Logged in as <b>{user.displayName}</b></div>
                 <div className="text-xs font-mono bg-slate-200 px-2 py-1 rounded text-slate-600">
@@ -613,7 +617,6 @@ export default function App() {
         </div>
 
         {studentQuestions.map((q, i) => {
-             // Robust AI Result Parsing
              const result = aiResult?.evaluations?.[q.id] || aiResult?.[q.id];
              return (
                 <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
