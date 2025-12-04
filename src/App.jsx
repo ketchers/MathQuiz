@@ -49,26 +49,23 @@ const gradeWithAI = async (quiz, answers) => {
   if (!GEMINI_API_KEY) return null;
   try {
     const prompt = `
-      You are a helpful math teacher. Grade these student answers.
-      Quiz Context: ${quiz.title}
+      You are a math teacher grading a quiz.
+      Quiz Title: ${quiz.title}
 
       Questions & Student Answers:
       ${quiz.questions.map(q => `
-        [QUESTION ID]: ${q.id}
-        [PROMPT]: ${q.text}
-        [STUDENT ANSWER]: ${answers[q.id] || "No answer provided"}
+        [ID: ${q.id}]
+        Question: ${q.text}
+        Student Answer: ${answers[q.id] || "No answer provided"}
       `).join('\n----------------\n')}
 
       INSTRUCTIONS:
-      1. Check if the math is correct. LaTeX formatting is expected.
-      2. Provide a short, helpful feedback sentence (max 15 words).
-      3. Return a JSON object where keys are the [QUESTION ID].
-
-      REQUIRED JSON STRUCTURE:
+      1. Check if the math is correct. Implicit multiplication and LaTeX variations are allowed.
+      2. If the answer is blank/empty, it is incorrect.
+      3. Return ONLY valid JSON. Structure:
       {
         "evaluations": {
-          "1715...": { "isCorrect": true, "feedback": "Good job." },
-          "1716...": { "isCorrect": false, "feedback": "Check your signs." }
+          "QUESTION_ID_HERE": { "isCorrect": boolean, "feedback": "Brief feedback string (max 15 words)" }
         }
       }
     `;
@@ -82,8 +79,13 @@ const gradeWithAI = async (quiz, answers) => {
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     
     if (text) {
+        // Cleaning: Remove markdown code blocks if present
         text = text.replace(/```json\n?|\n?```/g, '');
-        return JSON.parse(text);
+        // Find the JSON object
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+            return JSON.parse(match[0]);
+        }
     }
     return null;
   } catch (e) { 
@@ -94,17 +96,15 @@ const gradeWithAI = async (quiz, answers) => {
 
 // --- Components ---
 
-// Custom Hook to load KaTeX from CDN (No npm install needed)
+// Custom Hook to load KaTeX from CDN
 const useKaTeX = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
     if (window.katex) { setIsLoaded(true); return; }
-    
     const link = document.createElement('link'); 
     link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; 
     link.rel = "stylesheet"; 
     document.head.appendChild(link);
-    
     const script = document.createElement('script'); 
     script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; 
     script.onload = () => setIsLoaded(true); 
@@ -113,47 +113,32 @@ const useKaTeX = () => {
   return isLoaded;
 };
 
-// Custom Mini-Markdown Parser (Handles **bold**, [links](url), ![images](url))
-const parseMarkdown = (text) => {
-    if (!text) return null;
-    
-    // Regex for Images: ![alt](url)
-    const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
-    // We split by image first
-    const parts = text.split(imgRegex);
-    
-    if (parts.length === 1) return parseLinks(text);
+// --- Zero-Dependency Markdown Parser ---
 
-    const result = [];
-    for (let i = 0; i < parts.length; i += 3) {
-        result.push(<span key={i}>{parseLinks(parts[i])}</span>);
-        if (i + 2 < parts.length) {
-            const alt = parts[i+1];
-            const src = parts[i+2];
-            result.push(<img key={i+1} src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-4 border border-slate-200" />);
-        }
-    }
-    return result;
+const parseBold = (text) => {
+    if (!text) return null;
+    const parts = text.split(/\*\*(.*?)\*\*/g);
+    if (parts.length === 1) return text;
+    return parts.map((part, i) => i % 2 === 1 ? <strong key={i} className="font-extrabold text-slate-900">{part}</strong> : part);
 };
 
 const parseLinks = (text) => {
-    // Regex for Links: [text](url)
-    const parts = text.split(/\[(.*?)\]\((.*?)\)/g);
-    if (parts.length === 1) return parseBold(text);
+    if (!text) return null;
+    // Regex for [text](url)
+    const linkRegex = /\[(.*?)\]\((.*?)\)/g;
+    const parts = text.split(linkRegex);
     
+    if (parts.length === 1) return parseBold(text);
+
     const result = [];
     for (let i = 0; i < parts.length; i += 3) {
-        result.push(<span key={i}>{parseBold(parts[i])}</span>);
+        result.push(<span key={`t-${i}`}>{parseBold(parts[i])}</span>);
         if (i + 2 < parts.length) {
+            const linkText = parts[i+1];
+            const linkUrl = parts[i+2];
             result.push(
-                <a 
-                    key={i+1} 
-                    href={parts[i+2]} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold"
-                >
-                    {parseBold(parts[i+1])}
+                <a key={`l-${i}`} href={linkUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline font-bold mx-1">
+                    {parseBold(linkText)}
                 </a>
             );
         }
@@ -161,23 +146,26 @@ const parseLinks = (text) => {
     return result;
 };
 
-const parseBold = (text) => {
-    // Regex for Bold: **text**
-    const parts = text.split(/\*\*(.*?)\*\*/g);
-    if (parts.length === 1) return text;
+const parseMarkdown = (text) => {
+    if (!text) return null;
+    // Regex for images ![alt](url)
+    const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
+    const parts = text.split(imgRegex);
     
+    if (parts.length === 1) return parseLinks(text);
+
     const result = [];
-    for (let i = 0; i < parts.length; i += 2) {
-        result.push(parts[i]);
-        if (i + 1 < parts.length) {
-            result.push(<strong key={i+1} className="font-extrabold text-slate-900">{parts[i+1]}</strong>);
+    for (let i = 0; i < parts.length; i += 3) {
+        result.push(<span key={`b-${i}`}>{parseLinks(parts[i])}</span>);
+        if (i + 2 < parts.length) {
+            const alt = parts[i+1];
+            const src = parts[i+2];
+            result.push(<img key={`img-${i}`} src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-4 border border-slate-200 block" />);
         }
     }
     return result;
 };
 
-
-// Robust Math + Markdown Renderer
 const MathRenderer = ({ text }) => {
   const ref = useRef(null);
   const loaded = useKaTeX();
@@ -186,15 +174,12 @@ const MathRenderer = ({ text }) => {
   if (!text) return null;
 
   const safeText = String(text);
-  
-  // Split by Block Math $$...$$
   const blockParts = safeText.split(/(\$\$[\s\S]*?\$\$)/g);
 
   return (
     <div className="text-slate-700 leading-relaxed whitespace-pre-wrap">
       {blockParts.map((part, index) => {
         if (part.startsWith('$$')) {
-            // Block Math
             const math = part.slice(2, -2);
             return (
                 <div key={index} className="my-4 text-center overflow-x-auto p-1" ref={node => {
@@ -205,7 +190,6 @@ const MathRenderer = ({ text }) => {
                 }} />
             );
         } else {
-            // Inline text (needs checking for $...$)
             const inlineParts = part.split(/(\$[\s\S]*?\$)/g);
             return (
                 <span key={index}>
@@ -219,7 +203,6 @@ const MathRenderer = ({ text }) => {
                                 }
                             }} />;
                         } else {
-                            // Render Markdown here
                             return <span key={subIndex}>{parseMarkdown(subPart)}</span>;
                         }
                     })}
@@ -232,15 +215,7 @@ const MathRenderer = ({ text }) => {
 };
 
 export default function App() {
-  if (!isConfigured) return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100">
-          <div className="bg-white p-8 rounded shadow text-center max-w-lg">
-              <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4"/>
-              <h1 className="font-bold text-xl mb-2">Configuration Missing</h1>
-              <p className="text-slate-600 mb-4">Please open <code>MathQuizApp.jsx</code> and enter your keys.</p>
-          </div>
-      </div>
-  );
+  if (!isConfigured) return <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 font-bold text-red-500">Config Missing</div>;
 
   const [user, setUser] = useState(null);
   const [view, setView] = useState('loading'); 
@@ -295,7 +270,7 @@ export default function App() {
       createdAt: Date.now(),
       randomize: false,
       maxAttempts: 1, 
-      questions: [{ id: Date.now(), text: "New Question. Supports **bold**, [links](https://google.com), and $LaTeX$.", showFeedback: true }]
+      questions: [{ id: Date.now(), text: "New Question.", showFeedback: true }]
     };
     const docRef = await addDoc(collection(db, 'quizzes'), newQuiz);
     setActiveQuiz({ id: docRef.id, ...newQuiz });
@@ -310,33 +285,28 @@ export default function App() {
     reader.onload = async (e) => {
         try {
             let text = e.target.result;
-            
-            // SMART FIX: Remove "const EXAM_1_DATA =" wrapper if it exists
-            text = text.replace(/^\s*const\s+\w+\s*=\s*/, ''); // Remove start variable
-            text = text.replace(/;\s*$/, ''); // Remove trailing semicolon
-            
+            // Clean JS wrapper if present
+            text = text.replace(/^\s*const\s+\w+\s*=\s*/, '').replace(/;\s*$/, '');
             const json = JSON.parse(text);
             
             if (!json.title || !json.questions) {
-                alert("Invalid JSON format. Needs 'title' and 'questions' array.");
+                alert("Invalid JSON format.");
                 return;
             }
-            // Add metadata
             const newQuiz = {
                 ...json,
                 createdAt: Date.now(),
-                maxAttempts: json.maxAttempts || 1,
+                maxAttempts: json.maxAttempts || 1, // Default 1 if missing
                 randomize: json.randomize || false
             };
             await addDoc(collection(db, 'quizzes'), newQuiz);
-            alert(`Quiz "${json.title}" uploaded successfully!`);
+            alert(`Quiz "${json.title}" uploaded!`);
         } catch (error) {
             console.error(error);
-            alert("Error parsing file. Please check that it is valid JSON.");
+            alert("Error parsing file.");
         }
     };
     reader.readAsText(file);
-    // Reset input
     event.target.value = null;
   };
 
@@ -347,7 +317,7 @@ export default function App() {
   };
 
   const deleteSubmission = async (subId) => {
-      if(!confirm("Reset this student's attempt? They will be able to take the quiz again.")) return;
+      if(!confirm("Reset this attempt?")) return;
       await deleteDoc(doc(db, 'submissions', subId));
   };
 
@@ -359,28 +329,28 @@ export default function App() {
   const enterQuiz = async (quiz) => {
     setActiveQuiz(quiz);
     
-    // Fetch all submissions for this user and quiz
+    // Check previous attempts
     const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
     const snap = await getDocs(q);
-    
-    // Sort in memory
     const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
-    
     const count = userSubmissions.length;
     setAttemptsCount(count);
+    
     const allowed = quiz.maxAttempts || 1;
 
-    if (count >= allowed) {
+    // Logic: If they have attempts left, Start Fresh. If not, show results.
+    if (count < allowed) {
+        setAlreadyTaken(false);
+        setAiResult(null);
+        setStudentAnswers({});
+        setStudentQuestions(quiz.randomize ? shuffleArray(quiz.questions) : quiz.questions);
+    } else {
+        // Locked out -> Show latest
         const latest = userSubmissions[0];
         setAlreadyTaken(true);
         setAiResult(latest.grading);
         setStudentAnswers(latest.answers);
         setStudentQuestions(quiz.questions); 
-    } else {
-        setAlreadyTaken(false);
-        setAiResult(null);
-        setStudentAnswers({});
-        setStudentQuestions(quiz.randomize ? shuffleArray(quiz.questions) : quiz.questions);
     }
     setView('student-quiz');
   };
@@ -389,7 +359,9 @@ export default function App() {
     if (alreadyTaken) return;
     setIsSubmitting(true);
     
-    const grading = await gradeWithAI(activeQuiz, studentAnswers);
+    const gradingRaw = await gradeWithAI(activeQuiz, studentAnswers);
+    // Ensure we have the correct structure even if AI messes up
+    const grading = gradingRaw?.evaluations ? gradingRaw : { evaluations: gradingRaw };
     
     await addDoc(collection(db, 'submissions'), {
         quizId: activeQuiz.id,
@@ -397,15 +369,17 @@ export default function App() {
         studentName: user.displayName,
         email: user.email,
         answers: studentAnswers,
-        grading: grading ? grading.evaluations : null,
+        grading: grading,
         timestamp: Date.now()
     });
 
     setAiResult(grading);
-    setAlreadyTaken(true);
+    setAlreadyTaken(true); // Temporarily show results
     setAttemptsCount(c => c + 1); 
     setIsSubmitting(false);
   };
+
+  // --- RENDERING ---
 
   if (view === 'loading') return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-indigo-600"/></div>;
 
@@ -414,17 +388,16 @@ export default function App() {
       <div className="bg-white p-8 rounded-xl shadow-lg text-center max-w-sm w-full">
         <BookOpen className="w-12 h-12 mx-auto text-indigo-600 mb-4"/>
         <h1 className="text-2xl font-bold mb-2">Math Quiz Login</h1>
-        <button onClick={handleLogin} className="w-full bg-white border border-slate-300 text-slate-700 py-3 rounded-lg font-bold hover:bg-slate-50 transition flex items-center justify-center gap-2">
-          Sign in with Google
-        </button>
+        <button onClick={handleLogin} className="w-full bg-white border border-slate-300 text-slate-700 py-3 rounded-lg font-bold hover:bg-slate-50 transition flex items-center justify-center gap-2">Sign in with Google</button>
       </div>
     </div>
   );
 
+  // TEACHER DASHBOARD
   if (view === 'teacher-dashboard') return (
     <div className="min-h-screen bg-slate-50 p-6">
-      <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+      <div className="max-w-4xl mx-auto space-y-8">
+        <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
             <h1 className="text-xl font-bold flex gap-2 items-center text-slate-800"><LayoutList className="w-6 h-6 text-indigo-600"/> Teacher Dashboard</h1>
             <div className="flex gap-4 items-center">
                 <span className="text-sm font-medium text-slate-500 hidden sm:block">{user.email}</span>
@@ -433,24 +406,16 @@ export default function App() {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Create New Button */}
             <button onClick={createQuiz} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 font-bold transition group">
                 <div className="p-3 bg-slate-100 rounded-full group-hover:bg-indigo-100 transition"><Plus className="w-6 h-6"/></div>
                 Create Blank Quiz
             </button>
             
-            {/* Upload Button */}
             <button onClick={() => fileInputRef.current?.click()} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-emerald-500 hover:text-emerald-600 hover:bg-emerald-50 font-bold transition group">
                 <div className="p-3 bg-slate-100 rounded-full group-hover:bg-emerald-100 transition"><Upload className="w-6 h-6"/></div>
                 Upload Quiz JSON
             </button>
-            <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleFileUpload} 
-                className="hidden" 
-                accept=".json" // Changed to accept generic file to allow for sloppy extensions, but parsed as text
-            />
+            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
 
             {quizzes.map(q => (
                 <div key={q.id} onClick={() => { setActiveQuiz(q); setView('teacher-edit'); }} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:border-indigo-500 hover:shadow-md transition group relative h-40 flex flex-col justify-between">
@@ -472,6 +437,7 @@ export default function App() {
     </div>
   );
 
+  // TEACHER EDITOR
   if (view === 'teacher-edit') return (
     <div className="min-h-screen bg-slate-50 p-6 pb-20">
        <div className="max-w-6xl mx-auto grid lg:grid-cols-2 gap-8">
@@ -533,14 +499,7 @@ export default function App() {
             <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
                 {submissions.map(sub => (
                     <div key={sub.id} className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 text-sm relative group">
-                         <button 
-                            onClick={() => deleteSubmission(sub.id)} 
-                            className="absolute top-4 right-4 p-2 bg-white text-slate-300 border rounded hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition"
-                            title="Reset Attempt (Delete Submission)"
-                        >
-                            <RefreshCw className="w-4 h-4"/>
-                        </button>
-
+                         <button onClick={() => deleteSubmission(sub.id)} className="absolute top-4 right-4 p-2 bg-white text-slate-300 border rounded hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition" title="Reset Attempt"><RefreshCw className="w-4 h-4"/></button>
                         <div className="flex justify-between items-start mb-4 border-b border-slate-50 pb-3 pr-10">
                             <div>
                                 <div className="font-bold text-slate-800 text-lg">{sub.studentName}</div>
@@ -555,23 +514,10 @@ export default function App() {
                                     <div key={q.id} className="border-l-2 border-slate-100 pl-3">
                                         <div className="flex justify-between items-center mb-1">
                                             <span className="text-xs font-bold text-slate-400">Q{i+1}</span>
-                                            {grade && (
-                                              <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${grade.isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                {grade.isCorrect ? 'Correct' : 'Check Work'}
-                                              </span>
-                                            )}
+                                            {grade && <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${grade.isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{grade.isCorrect ? 'Correct' : 'Check Work'}</span>}
                                         </div>
-                                        
-                                        <div className="bg-slate-50 p-2 rounded mb-1">
-                                            <MathRenderer text={sub.answers[q.id] || ""} />
-                                        </div>
-
-                                        {grade?.feedback && (
-                                            <div className="text-xs text-slate-500 italic mt-1">
-                                                <span className="font-bold text-indigo-400 not-italic mr-1">AI:</span> 
-                                                {grade.feedback}
-                                            </div>
-                                        )}
+                                        <div className="bg-slate-50 p-2 rounded mb-1"><MathRenderer text={sub.answers[q.id] || ""} /></div>
+                                        {grade?.feedback && <div className="text-xs text-slate-500 italic mt-1"><span className="font-bold text-indigo-400 not-italic mr-1">AI:</span> {grade.feedback}</div>}
                                     </div>
                                 )
                             })}
@@ -584,6 +530,7 @@ export default function App() {
     </div>
   );
 
+  // STUDENT SELECT
   if (view === 'student-select') return (
     <div className="min-h-screen bg-slate-50 p-6 flex flex-col items-center">
         <div className="w-full max-w-md space-y-6">
@@ -607,7 +554,7 @@ export default function App() {
     </div>
   );
 
-  // Student Quiz View
+  // STUDENT QUIZ
   return (
     <div className="min-h-screen bg-slate-50 p-4 pb-24">
       <div className="max-w-2xl mx-auto space-y-6">
@@ -625,17 +572,31 @@ export default function App() {
                      Attempt {attemptsCount} / {activeQuiz.maxAttempts || 1}
                 </div>
             </div>
-            {alreadyTaken && <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3">
-                <Lock className="w-5 h-5 mt-0.5 shrink-0"/> 
-                <div className="text-sm">
-                    <div className="font-bold">Quiz Submitted</div>
-                    <div>You have reached the maximum attempts for this quiz. Your previous result is shown below.</div>
+            
+            {/* RETAKE LOGIC: Only show if locked out AND has retakes left */}
+            {alreadyTaken && attemptsCount < (activeQuiz.maxAttempts || 1) && (
+                <div className="mt-4 p-4 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-xl flex flex-col items-center gap-3 text-center animate-in fade-in slide-in-from-top-2">
+                    <div className="font-bold">Attempt {attemptsCount} Submitted.</div>
+                    <div className="text-sm">You have { (activeQuiz.maxAttempts || 1) - attemptsCount } attempts remaining.</div>
+                    <button onClick={() => { setAlreadyTaken(false); setStudentAnswers({}); setAiResult(null); }} className="px-4 py-2 bg-indigo-600 text-white rounded font-bold shadow hover:bg-indigo-700">Take Again</button>
                 </div>
-            </div>}
+            )}
+
+            {alreadyTaken && attemptsCount >= (activeQuiz.maxAttempts || 1) && (
+                <div className="mt-4 p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl flex items-start gap-3">
+                    <Lock className="w-5 h-5 mt-0.5 shrink-0"/> 
+                    <div className="text-sm">
+                        <div className="font-bold">Quiz Submitted</div>
+                        <div>You have reached the maximum attempts for this quiz. Results shown below.</div>
+                    </div>
+                </div>
+            )}
         </div>
 
         {studentQuestions.map((q, i) => {
+             // Robust AI Result Parsing
              const result = aiResult?.evaluations?.[q.id] || aiResult?.[q.id];
+             
              return (
                 <div key={q.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
                     <div className="border-b border-slate-100 pb-4">
