@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BookOpen, Edit3, Plus, Trash2, Save, CheckCircle, XCircle, Users, Loader2, Lock, LogOut, LayoutList, Shuffle, AlertTriangle, ArrowLeft, RefreshCw, Settings } from 'lucide-react';
+import { BookOpen, Edit3, Plus, Trash2, Save, CheckCircle, XCircle, Users, Loader2, Lock, LogOut, LayoutList, Shuffle, AlertTriangle, ArrowLeft, RefreshCw, Upload, FileJson, Image as ImageIcon } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
@@ -94,39 +94,141 @@ const gradeWithAI = async (quiz, answers) => {
 
 // --- Components ---
 
+// Custom Hook to load KaTeX from CDN (No npm install needed)
 const useKaTeX = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
     if (window.katex) { setIsLoaded(true); return; }
-    const link = document.createElement('link'); link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; link.rel = "stylesheet"; document.head.appendChild(link);
-    const script = document.createElement('script'); script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; script.onload = () => setIsLoaded(true); document.body.appendChild(script);
+    
+    const link = document.createElement('link'); 
+    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"; 
+    link.rel = "stylesheet"; 
+    document.head.appendChild(link);
+    
+    const script = document.createElement('script'); 
+    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"; 
+    script.onload = () => setIsLoaded(true); 
+    document.body.appendChild(script);
   }, []);
   return isLoaded;
 };
 
+// Custom Mini-Markdown Parser (Handles **bold**, [links](url), ![images](url))
+const parseMarkdown = (text) => {
+    if (!text) return null;
+    
+    // Regex for Images: ![alt](url)
+    const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
+    // We split by image first
+    const parts = text.split(imgRegex);
+    
+    if (parts.length === 1) return parseLinks(text);
+
+    const result = [];
+    for (let i = 0; i < parts.length; i += 3) {
+        result.push(<span key={i}>{parseLinks(parts[i])}</span>);
+        if (i + 2 < parts.length) {
+            const alt = parts[i+1];
+            const src = parts[i+2];
+            result.push(<img key={i+1} src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-4 border border-slate-200" />);
+        }
+    }
+    return result;
+};
+
+const parseLinks = (text) => {
+    // Regex for Links: [text](url)
+    const parts = text.split(/\[(.*?)\]\((.*?)\)/g);
+    if (parts.length === 1) return parseBold(text);
+    
+    const result = [];
+    for (let i = 0; i < parts.length; i += 3) {
+        result.push(<span key={i}>{parseBold(parts[i])}</span>);
+        if (i + 2 < parts.length) {
+            result.push(
+                <a 
+                    key={i+1} 
+                    href={parts[i+2]} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold"
+                >
+                    {parseBold(parts[i+1])}
+                </a>
+            );
+        }
+    }
+    return result;
+};
+
+const parseBold = (text) => {
+    // Regex for Bold: **text**
+    const parts = text.split(/\*\*(.*?)\*\*/g);
+    if (parts.length === 1) return text;
+    
+    const result = [];
+    for (let i = 0; i < parts.length; i += 2) {
+        result.push(parts[i]);
+        if (i + 1 < parts.length) {
+            result.push(<strong key={i+1} className="font-extrabold text-slate-900">{parts[i+1]}</strong>);
+        }
+    }
+    return result;
+};
+
+
+// Robust Math + Markdown Renderer
 const MathRenderer = ({ text }) => {
   const ref = useRef(null);
   const loaded = useKaTeX();
-  useEffect(() => {
-    if (!loaded || !ref.current || !text) return;
-    ref.current.innerHTML = '';
-    const safeText = String(text);
-    safeText.split(/(\$\$[\s\S]*?\$\$)/g).forEach(part => {
-      if (part.startsWith('$$')) {
-        const div = document.createElement('div'); div.className = "my-2 text-center overflow-x-auto";
-        try { window.katex.render(part.slice(2, -2), div, { displayMode: true }); } catch { div.textContent = part; }
-        ref.current.appendChild(div);
-      } else {
-        part.split(/(\$[\s\S]*?\$)/g).forEach(sub => {
-           const span = document.createElement('span');
-           if (sub.startsWith('$')) try { window.katex.render(sub.slice(1, -1), span); } catch { span.textContent = sub; }
-           else span.textContent = sub;
-           ref.current.appendChild(span);
-        });
-      }
-    });
-  }, [text, loaded]);
-  return <div ref={ref} className="whitespace-pre-wrap" />;
+
+  if (!loaded) return <span className="text-slate-400 text-xs">Loading math...</span>;
+  if (!text) return null;
+
+  const safeText = String(text);
+  
+  // Split by Block Math $$...$$
+  const blockParts = safeText.split(/(\$\$[\s\S]*?\$\$)/g);
+
+  return (
+    <div className="text-slate-700 leading-relaxed whitespace-pre-wrap">
+      {blockParts.map((part, index) => {
+        if (part.startsWith('$$')) {
+            // Block Math
+            const math = part.slice(2, -2);
+            return (
+                <div key={index} className="my-4 text-center overflow-x-auto p-1" ref={node => {
+                    if (node) {
+                        try { window.katex.render(math, node, { displayMode: true, throwOnError: false }); } 
+                        catch (e) { node.textContent = e.message; }
+                    }
+                }} />
+            );
+        } else {
+            // Inline text (needs checking for $...$)
+            const inlineParts = part.split(/(\$[\s\S]*?\$)/g);
+            return (
+                <span key={index}>
+                    {inlineParts.map((subPart, subIndex) => {
+                        if (subPart.startsWith('$')) {
+                            const math = subPart.slice(1, -1);
+                            return <span key={subIndex} className="mx-0.5 inline-block" ref={node => {
+                                if (node) {
+                                    try { window.katex.render(math, node, { displayMode: false, throwOnError: false }); } 
+                                    catch (e) { node.textContent = e.message; }
+                                }
+                            }} />;
+                        } else {
+                            // Render Markdown here
+                            return <span key={subIndex}>{parseMarkdown(subPart)}</span>;
+                        }
+                    })}
+                </span>
+            );
+        }
+      })}
+    </div>
+  );
 };
 
 export default function App() {
@@ -153,6 +255,9 @@ export default function App() {
   const [attemptsCount, setAttemptsCount] = useState(0);
   const [aiResult, setAiResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // File Upload Ref
+  const fileInputRef = useRef(null);
 
   useEffect(() => onAuthStateChanged(auth, (u) => {
     setUser(u);
@@ -189,12 +294,50 @@ export default function App() {
       title: "New Quiz",
       createdAt: Date.now(),
       randomize: false,
-      maxAttempts: 1, // Default to 1 attempt
-      questions: [{ id: Date.now(), text: "New Question", showFeedback: true }]
+      maxAttempts: 1, 
+      questions: [{ id: Date.now(), text: "New Question. Supports **bold**, [links](https://google.com), and $LaTeX$.", showFeedback: true }]
     };
     const docRef = await addDoc(collection(db, 'quizzes'), newQuiz);
     setActiveQuiz({ id: docRef.id, ...newQuiz });
     setView('teacher-edit');
+  };
+
+  const handleFileUpload = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            let text = e.target.result;
+            
+            // SMART FIX: Remove "const EXAM_1_DATA =" wrapper if it exists
+            text = text.replace(/^\s*const\s+\w+\s*=\s*/, ''); // Remove start variable
+            text = text.replace(/;\s*$/, ''); // Remove trailing semicolon
+            
+            const json = JSON.parse(text);
+            
+            if (!json.title || !json.questions) {
+                alert("Invalid JSON format. Needs 'title' and 'questions' array.");
+                return;
+            }
+            // Add metadata
+            const newQuiz = {
+                ...json,
+                createdAt: Date.now(),
+                maxAttempts: json.maxAttempts || 1,
+                randomize: json.randomize || false
+            };
+            await addDoc(collection(db, 'quizzes'), newQuiz);
+            alert(`Quiz "${json.title}" uploaded successfully!`);
+        } catch (error) {
+            console.error(error);
+            alert("Error parsing file. Please check that it is valid JSON.");
+        }
+    };
+    reader.readAsText(file);
+    // Reset input
+    event.target.value = null;
   };
 
   const deleteQuiz = async (id, e) => {
@@ -220,7 +363,7 @@ export default function App() {
     const q = query(collection(db, 'submissions'), where('quizId', '==', quiz.id), where('userId', '==', user.uid));
     const snap = await getDocs(q);
     
-    // Sort in memory to avoid complex Firestore index requirements
+    // Sort in memory
     const userSubmissions = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp - a.timestamp);
     
     const count = userSubmissions.length;
@@ -228,14 +371,12 @@ export default function App() {
     const allowed = quiz.maxAttempts || 1;
 
     if (count >= allowed) {
-        // LOCKOUT MODE: Show latest attempt
         const latest = userSubmissions[0];
         setAlreadyTaken(true);
         setAiResult(latest.grading);
         setStudentAnswers(latest.answers);
-        setStudentQuestions(quiz.questions); // Standard order for review
+        setStudentQuestions(quiz.questions); 
     } else {
-        // ACTIVE MODE
         setAlreadyTaken(false);
         setAiResult(null);
         setStudentAnswers({});
@@ -262,7 +403,7 @@ export default function App() {
 
     setAiResult(grading);
     setAlreadyTaken(true);
-    setAttemptsCount(c => c + 1); // Increment local count for UI
+    setAttemptsCount(c => c + 1); 
     setIsSubmitting(false);
   };
 
@@ -292,10 +433,25 @@ export default function App() {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {/* Create New Button */}
             <button onClick={createQuiz} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 font-bold transition group">
                 <div className="p-3 bg-slate-100 rounded-full group-hover:bg-indigo-100 transition"><Plus className="w-6 h-6"/></div>
-                Create New Quiz
+                Create Blank Quiz
             </button>
+            
+            {/* Upload Button */}
+            <button onClick={() => fileInputRef.current?.click()} className="h-40 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-emerald-500 hover:text-emerald-600 hover:bg-emerald-50 font-bold transition group">
+                <div className="p-3 bg-slate-100 rounded-full group-hover:bg-emerald-100 transition"><Upload className="w-6 h-6"/></div>
+                Upload Quiz JSON
+            </button>
+            <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileUpload} 
+                className="hidden" 
+                accept=".json" // Changed to accept generic file to allow for sloppy extensions, but parsed as text
+            />
+
             {quizzes.map(q => (
                 <div key={q.id} onClick={() => { setActiveQuiz(q); setView('teacher-edit'); }} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:border-indigo-500 hover:shadow-md transition group relative h-40 flex flex-col justify-between">
                     <div>
@@ -361,7 +517,7 @@ export default function App() {
                         </div>
                         <textarea className="w-full p-3 border border-slate-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 outline-none" rows={3} value={q.text} onChange={e => {
                             const n = [...activeQuiz.questions]; n[i].text = e.target.value; setActiveQuiz({...activeQuiz, questions: n});
-                        }} placeholder="Enter question (LaTeX supported)..." />
+                        }} placeholder="Enter question (Markdown & LaTeX supported)..." />
                         <div className="mt-3 p-3 bg-white border border-slate-100 rounded-lg min-h-[40px]"><MathRenderer text={q.text}/></div>
                       </div>
                     ))}
