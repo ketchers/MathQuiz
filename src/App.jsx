@@ -8,19 +8,19 @@ import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, onSnapshot, q
 // 🔧 CONFIGURATION
 // ==================================================================================
 
-const GEMINI_API_KEY = "AIzaSyAP9aBXGhgxgZvN7AoBXvab2KiQ1AwzSK0"; // Example: "AIzaSy..."
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBUCnlQezJag7yzn_RgzcGmsDZj0vUw17Y",
-  authDomain: "mathquiz-7bd8e.firebaseapp.com",
-  projectId: "mathquiz-7bd8e",
-  storageBucket: "mathquiz-7bd8e.firebasestorage.app",
-  messagingSenderId: "899612963466",
-  appId: "1:899612963466:web:9972fdef028ace44f37373",
-  measurementId: "G-E4FZS9M3PD"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || ""
 };
 
-const TEACHER_EMAIL = "richard.ketchersid@gmail.com"; // ENTER YOUR EXACT GOOGLE EMAIL HERE
+const TEACHER_EMAIL = import.meta.env.VITE_TEACHER_EMAIL || "";
 
 // ==================================================================================
 // 🚀 APP LOGIC
